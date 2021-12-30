@@ -1501,17 +1501,38 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
   return s;
 }
 
+// 这是 Open 的入口函数
+// 打开一个数据库实例
+// 打开具有指定“名称”的数据库进行读取和写入。
+// 将指向堆分配数据库的指针存储在 *dbptr 中，
+// 并在成功时返回 OK。
+// 将 nullptr 存储在 *dbptr 中，并在出错时返回非 OK 状态，包括 DB 是否已被另一个
+// DB 对象打开（读写）。 （此保证取决于
+// options.env->LockFile()，它可能不会在自定义 Env 实现中提供此保证。）
+//
+// 当不再需要 *dbptr 时，调用者必须删除它。
 Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
+  // 构造和解析选项
   DBOptions db_options(options);
   ColumnFamilyOptions cf_options(options);
+  // 存储列族描述符的动态数组
   std::vector<ColumnFamilyDescriptor> column_families;
+  // 初始时只有一个默认列族
   column_families.push_back(
+      // kDefaultColumnFamilyName就是default
       ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_options));
+  // 如果为真，则设置一个隐藏的列族用于定期存储统计信息
   if (db_options.persist_stats_to_disk) {
     column_families.push_back(
         ColumnFamilyDescriptor(kPersistentStatsColumnFamilyName, cf_options));
   }
+  // 存储列族句柄指针的动态数组
   std::vector<ColumnFamilyHandle*> handles;
+  // 调用更内部的函数
+  // 打开数据库
+  // column_families当中只有列族的名字和选项
+  // handles 好像只是在这里用于
+
   Status s = DB::Open(db_options, dbname, column_families, &handles, dbptr);
   if (s.ok()) {
     if (db_options.persist_stats_to_disk) {
@@ -1521,6 +1542,7 @@ Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
     }
     // i can delete the handle since DBImpl is always holding a reference to
     // default column family
+    // 可以删除句柄，因为 DBImpl 始终持有对默认列族的引用，即后续实际通过dbptr指针操作数据库
     if (db_options.persist_stats_to_disk && handles[1] != nullptr) {
       delete handles[1];
     }
@@ -1582,10 +1604,15 @@ IOStatus DBImpl::CreateWAL(uint64_t log_file_num, uint64_t recycle_log_number,
   return io_s;
 }
 
+// Open 从  DB::Open 调用到heli
 Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
                     const std::vector<ColumnFamilyDescriptor>& column_families,
                     std::vector<ColumnFamilyHandle*>* handles, DB** dbptr,
                     const bool seq_per_batch, const bool batch_per_txn) {
+  // 在调用这个函数的时候，列族列表（参数中的column_families）中只有一个默认列族，
+  // （可能还有一个）存储统计信息的隐藏列族
+
+  // 检查打开数据库的选项是否和目标数据库所有列族的选项相容
   Status s = ValidateOptionsByTable(db_options, column_families);
   if (!s.ok()) {
     return s;
@@ -1596,27 +1623,44 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     return s;
   }
 
+  // 清空返回的DB指针
   *dbptr = nullptr;
+  // 清空存储列族句柄的动态数组
   handles->clear();
-
+  // 获取最大写缓冲区大小，遍历所有列族，以最大的写缓冲区大小设置为准
   size_t max_write_buffer_size = 0;
+  // handles存储列族句柄（包含具体的列族信息）
+  // column_families存储列族描述符，只有列族的名字、选项等信息
+  // 如果有DB指针，就可以配合列族描述符找到实际操作列族使用的列族句柄
   for (auto cf : column_families) {
     max_write_buffer_size =
         std::max(max_write_buffer_size, cf.options.write_buffer_size);
   }
-
+  // 新建数据库，返回指向DBImpl的指针，
+  // DBImpl是一个继承了DB类的类，
+  // 后面会直接把指向DBImpl的impl赋值给需要返回的指向DB的dbptr,
+  // C++允许将子类赋值给父类，因为子类的元素包含父类
+  // 反之不行
   DBImpl* impl = new DBImpl(db_options, dbname, seq_per_batch, batch_per_txn);
+
+  // 上面执行的不是打开数据库的操作，而是新建一个指向数据库的指针，按照给定的值进行赋值
+  // 后面的代码才是实际打开数据库的逻辑，进一步填满这个类，并创建相关文件
+
   s = impl->env_->CreateDirIfMissing(impl->immutable_db_options_.GetWalDir());
+  // 如果找到则创建wal的文件夹
   if (s.ok()) {
+    // 找到每一个immutable的路径
     std::vector<std::string> paths;
     for (auto& db_path : impl->immutable_db_options_.db_paths) {
       paths.emplace_back(db_path.path);
     }
+    // 找到每一个列族的路径
     for (auto& cf : column_families) {
       for (auto& cf_path : cf.options.cf_paths) {
         paths.emplace_back(cf_path.path);
       }
     }
+    // 以上路径如有缺失，则新建
     for (auto& path : paths) {
       s = impl->env_->CreateDirIfMissing(path);
       if (!s.ok()) {
@@ -1626,20 +1670,21 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
 
     // For recovery from NoSpace() error, we can only handle
     // the case where the database is stored in a single path
+    // 为了从 NoSpace() 错误中恢复，我们只能处理数据库存储在单个路径中的情况
     if (paths.size() <= 1) {
       impl->error_handler_.EnableAutoRecovery();
     }
   }
   if (s.ok()) {
-    s = impl->CreateArchivalDirectory();
+    s = impl->CreateArchivalDirectory(); // 创建档案目录
   }
   if (!s.ok()) {
     delete impl;
     return s;
   }
-
+  // // 设置数据库的write ahead log路径是否与数据库路径相同
   impl->wal_in_db_path_ = impl->immutable_db_options_.IsWalDirSameAsDBPath();
-
+  // 获取对整个数据库的互斥锁
   impl->mutex_.Lock();
   // Handles create_if_missing, error_if_exists
   uint64_t recovered_seq(kMaxSequenceNumber);

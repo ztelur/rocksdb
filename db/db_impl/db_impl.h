@@ -132,6 +132,7 @@ class Directories {
 //
 // Since it's a very large class, the definition of the functions is
 // divided in several db_impl_*.cc files, besides db_impl.cc.
+// DB 是空开接口，DBImpl是实际的实现，其他的不同的 DB 实现都在该类中进行封装，相当于一个入口函数
 class DBImpl : public DB {
  public:
   DBImpl(const DBOptions& options, const std::string& dbname,

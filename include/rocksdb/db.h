@@ -147,6 +147,7 @@ using TablePropertiesCollection =
 // any external synchronization.
 // DB is an abstract base class with one primary implementation (DBImpl)
 // and a number of wrapper implementations.
+// 代码的入口
 class DB {
  public:
   // Open the database with the specified "name" for reads and writes.

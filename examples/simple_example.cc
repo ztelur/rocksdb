@@ -27,7 +27,7 @@ int main() {
   // create the DB if it's not already present
   options.create_if_missing = true;
 
-  // open DB
+  // open DB 这里将 db 的饮用传递进去了？而不是在里边创建一个值然后返回
   Status s = DB::Open(options, kDBPath, &db);
   assert(s.ok());
 
