@@ -443,12 +443,26 @@ class DB {
   // a status for which Status::IsNotFound() returns true.
   //
   // May return some other Status on an error.
+  /// 从数据库中读一个键.
+  /// 如果数据库包含“key”的条目，则将相应的值存储在 *value 中并返回 OK.
+  /// 如果启用时间戳并传入非空时间戳指针，则返回时间戳.
+  /// 如果没有“key”条目，则保持 *value 不变并返回 Status::IsNotFound() 返回 true 的状态.
+  /// 可能会在出现错误时返回一些其他状态.
+  /// \param options 读控制选项
+  /// \param column_family 列族
+  /// \param key 键
+  /// \param value 指向字符串的指针,用于存储查询到的值
+  /// \return 这次读的状态
   virtual inline Status Get(const ReadOptions& options,
                             ColumnFamilyHandle* column_family, const Slice& key,
                             std::string* value) {
+    // 确定用于存放查找到的值的string指针非空
     assert(value != nullptr);
+    // 将value封装成一个PinnableSlice，后面都使用pinnable_val变量
+    //    // 避免数据在内存中传递导致的额外赋值
     PinnableSlice pinnable_val(value);
     assert(!pinnable_val.IsPinned());
+    // 传入函数的是std::string* value但是实际运行时传入的参数是&pinnable_val(value)
     auto s = Get(options, column_family, key, &pinnable_val);
     if (s.ok() && pinnable_val.IsPinned()) {
       value->assign(pinnable_val.data(), pinnable_val.size());

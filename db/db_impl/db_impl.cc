@@ -149,21 +149,28 @@ void DumpSupportInfo(Logger* logger) {
 }
 }  // namespace
 
+/// 创建一个新的DBImpl类，实际成为操纵一个数据库的最基本的接口
+/// \param options 数据库选项
+/// \param dbname 数据库路径
+/// \param seq_per_batch
+/// \param batch_per_txn
+/// \param read_only 是否只读
 DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
                const bool seq_per_batch, const bool batch_per_txn,
                bool read_only)
-    : dbname_(dbname),
-      own_info_log_(options.info_log == nullptr),
+    : dbname_(dbname), // 数据库路径为给定路径
+      own_info_log_(options.info_log == nullptr), // 是否分配并拥有日志信息文件
       initial_db_options_(SanitizeOptions(dbname, options, read_only)),
-      env_(initial_db_options_.env),
+      env_(initial_db_options_.env), // 用于指定运行环境，默认env_posix
       io_tracer_(std::make_shared<IOTracer>()),
       immutable_db_options_(initial_db_options_),
       fs_(immutable_db_options_.fs, io_tracer_),
       mutable_db_options_(initial_db_options_),
       stats_(immutable_db_options_.stats),
+      // DBImpl中的互斥量是一个结构化的互斥量
       mutex_(stats_, immutable_db_options_.clock, DB_MUTEX_WAIT_MICROS,
              immutable_db_options_.use_adaptive_mutex),
-      default_cf_handle_(nullptr),
+      default_cf_handle_(nullptr), // 默认列族句柄
       error_handler_(this, immutable_db_options_, &mutex_),
       event_logger_(immutable_db_options_.info_log.get()),
       max_total_in_memory_state_(0),
@@ -1720,10 +1727,14 @@ Status DBImpl::Get(const ReadOptions& read_options,
 Status DBImpl::Get(const ReadOptions& read_options,
                    ColumnFamilyHandle* column_family, const Slice& key,
                    PinnableSlice* value, std::string* timestamp) {
+  //   // 创建get_impl_options结构体
   GetImplOptions get_impl_options;
+  // 存储从哪个column_family读
   get_impl_options.column_family = column_family;
+  // 读到的内容存在哪
   get_impl_options.value = value;
   get_impl_options.timestamp = timestamp;
+  // Rocksdb 的 Get 接口 DBImpl::Get 其实现主要靠 DBImpl::GetImpl 函数调用。
   Status s = GetImpl(read_options, key, get_impl_options);
   return s;
 }
@@ -1738,13 +1749,14 @@ class GetWithTimestampReadCallback : public ReadCallback {
   }
 };
 }  // namespace
-
+// 按照memtable-immutable-sstable的顺序查找
 Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
                        GetImplOptions& get_impl_options) {
   assert(get_impl_options.value != nullptr ||
          get_impl_options.merge_operands != nullptr);
 
   assert(get_impl_options.column_family);
+  // 获取大小对比器
   const Comparator* ucmp = get_impl_options.column_family->GetComparator();
   assert(ucmp);
   size_t ts_sz = ucmp->timestamp_size();
@@ -1778,12 +1790,14 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   }
 
   // Acquire SuperVersion
+  // 构建当前数据库的SuperVersion
   SuperVersion* sv = GetAndRefSuperVersion(cfd);
 
   TEST_SYNC_POINT("DBImpl::GetImpl:1");
   TEST_SYNC_POINT("DBImpl::GetImpl:2");
 
   SequenceNumber snapshot;
+  // 版本读取的相关逻辑
   if (read_options.snapshot != nullptr) {
     if (get_impl_options.callback) {
       // Already calculated based on read_options.snapshot
@@ -1798,9 +1812,12 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
     // data for the snapshot, so the reader would see neither data that was be
     // visible to the snapshot before compaction nor the newer data inserted
     // afterwards.
+    // 当 last seq 等于 publish seq 时
     if (last_seq_same_as_publish_seq_) {
+      // 读取当前的版本号即可
       snapshot = versions_->LastSequence();
     } else {
+      // 否则获取当前的 publish sequence
       snapshot = versions_->LastPublishedSequence();
     }
     if (get_impl_options.callback) {
@@ -1840,19 +1857,22 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   SequenceNumber max_covering_tombstone_seq = 0;
 
   Status s;
+  // 第一步，在 memtable 中查找
   // First look in the memtable, then in the immutable memtable (if any).
   // s is both in/out. When in, s could either be OK or MergeInProgress.
   // merge_operands will contain the sequence of merges in the latter case.
+  // 使用原生key，snapshot 和 timestamp 生成 lookup key
   LookupKey lkey(key, snapshot, read_options.timestamp);
   PERF_TIMER_STOP(get_snapshot_time);
-
+  // 是否要跳过 skip_memtable
   bool skip_memtable = (read_options.read_tier == kPersistedTier &&
                         has_unpersisted_data_.load(std::memory_order_relaxed));
   bool done = false;
   std::string* timestamp = ts_sz > 0 ? get_impl_options.timestamp : nullptr;
   if (!skip_memtable) {
-    // Get value associated with key
+    // Get value associated with key 通过 key 来读取
     if (get_impl_options.get_value) {
+      // 从 mem 中读取数据
       if (sv->mem->Get(lkey, get_impl_options.value->GetSelf(), timestamp, &s,
                        &merge_context, &max_covering_tombstone_seq,
                        read_options, get_impl_options.callback,
@@ -1861,6 +1881,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
         get_impl_options.value->PinSelf();
         RecordTick(stats_, MEMTABLE_HIT);
       } else if ((s.ok() || s.IsMergeInProgress()) &&
+                 // 读取不到，则从 immutable memtable 中读取
                  sv->imm->Get(lkey, get_impl_options.value->GetSelf(),
                               timestamp, &s, &merge_context,
                               &max_covering_tombstone_seq, read_options,
@@ -1893,6 +1914,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   }
   if (!done) {
     PERF_TIMER_GUARD(get_from_output_files_time);
+    // 从 sstable 读取
     sv->current->Get(
         read_options, lkey, get_impl_options.value, timestamp, &s,
         &merge_context, &max_covering_tombstone_seq,

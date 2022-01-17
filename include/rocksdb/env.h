@@ -365,6 +365,7 @@ class Env {
 
   // Creates directory if missing. Return Ok if it exists, or successful in
   // Creating.
+  // env 是接口级别的抽象，会有不同环境的实现
   virtual Status CreateDirIfMissing(const std::string& dirname) = 0;
 
   // Delete the specified directory.

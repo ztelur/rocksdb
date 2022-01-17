@@ -61,7 +61,7 @@ struct Options;
 struct DbPath;
 
 using FileTypeSet = SmallEnumSet<FileType, FileType::kBlobFile>;
-
+// 有关于列族的Options
 struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
   // The function recovers options to a previous version. Only 4.6 or later
   // versions are supported.
@@ -447,6 +447,7 @@ class CompactionService : public Customizable {
   ~CompactionService() override = default;
 };
 
+// 有关数据库的 Options
 struct DBOptions {
   // The function recovers options to the option as in version 4.6.
   DBOptions* OldDefaults(int rocksdb_major_version = 4,
