@@ -357,6 +357,11 @@ class DB {
   virtual Status Put(const WriteOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      const Slice& value) = 0;
+  // /// 写入操作基本接口
+  //  /// \param options 写入选项
+  //  /// \param key
+  //  /// \param value
+  //  /// \return 写入状态
   virtual Status Put(const WriteOptions& options, const Slice& key,
                      const Slice& value) {
     return Put(options, DefaultColumnFamily(), key, value);
@@ -431,6 +436,7 @@ class DB {
   // options.sync=true.
   // Returns OK on success, non-OK on failure.
   // Note: consider setting options.sync = true.
+
   virtual Status Write(const WriteOptions& options, WriteBatch* updates) = 0;
 
   // If the database contains an entry for "key" store the

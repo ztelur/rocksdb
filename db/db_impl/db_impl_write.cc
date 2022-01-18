@@ -65,6 +65,19 @@ Status DBImpl::WriteWithCallback(const WriteOptions& write_options,
 // The main write queue. This is the only write queue that updates LastSequence.
 // When using one write queue, the same sequence also indicates the last
 // published sequence.
+/// 主写队列。
+/// 这是唯一更新 LastSequence 的写队列。
+/// 使用一个写队列时，同样的序列也表示最后发布的序列。
+/// \param write_options 写选项
+/// \param my_batch 待写入的batch
+/// \param callback 默认为nullptr
+/// \param log_used 默认为nullptr
+/// \param log_ref 默认为0
+/// \param disable_memtable 默认为false
+/// \param seq_used 默认为nullptr
+/// \param batch_cnt 默认为0
+/// \param pre_release_callback 默认为nullptr
+/// \return 写状态
 Status DBImpl::WriteImpl(const WriteOptions& write_options,
                          WriteBatch* my_batch, WriteCallback* callback,
                          uint64_t* log_used, uint64_t log_ref,
@@ -87,6 +100,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
       tracer_->Write(my_batch).PermitUncheckedError();
     }
   }
+  // 处理了一批特殊场景
   if (write_options.sync && write_options.disableWAL) {
     return Status::InvalidArgument("Sync writes has to enable WAL.");
   }
@@ -159,12 +173,15 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
   }
 
   PERF_TIMER_GUARD(write_pre_and_post_process_time);
+  // 构造一个Writer
   WriteThread::Writer w(write_options, my_batch, callback, log_ref,
                         disable_memtable, batch_cnt, pre_release_callback);
   StopWatch write_sw(immutable_db_options_.clock, stats_, DB_WRITE);
-
+  // 将Writer加入队列，多个Writer构成一个Group （见函数a
   write_thread_.JoinBatchGroup(&w);
+  // 根据上面Writer加入Group返回的状态（指示Writer是否成为了领导者，写入是否完成等），继续完成后续的操作
   if (w.state == WriteThread::STATE_PARALLEL_MEMTABLE_WRITER) {
+    // 我们是平行小组的非领导者
     // we are a non-leader in a parallel group
 
     if (w.ShouldWriteToMemtable()) {
@@ -185,6 +202,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
 
     if (write_thread_.CompleteParallelMemTableWriter(&w)) {
       // we're responsible for exit batch group
+      // 我们负责退出批处理组
       // TODO(myabandeh): propagate status to write_group
       auto last_sequence = w.write_group->last_sequence;
       versions_->SetLastSequence(last_sequence);
@@ -194,6 +212,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     assert(w.state == WriteThread::STATE_COMPLETED);
     // STATE_COMPLETED conditional below handles exit
   }
+  // 写入已经完成且当前writer不需要负责退出批处理
   if (w.state == WriteThread::STATE_COMPLETED) {
     if (log_used != nullptr) {
       *log_used = w.log_used;
@@ -248,11 +267,13 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
   // into memtables
 
   TEST_SYNC_POINT("DBImpl::WriteImpl:BeforeLeaderEnters");
+  // 补全双向列表，形成 batch group
   last_batch_group_size_ =
       write_thread_.EnterAsBatchGroupLeader(&w, &write_group);
 
   IOStatus io_s;
   Status pre_release_cb_status;
+  // 真正进行写入
   if (status.ok()) {
     // TODO: this use of operator bool on `tracer_` can avoid unnecessary lock
     // grabs but does not seem thread-safe.
@@ -276,6 +297,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     // assumed to be true.  Rule 3 is checked for each batch.  We could
     // relax rules 2 if we could prevent write batches from referring
     // more than once to a particular key.
+    // 判断是否并行和非并行
     bool parallel = immutable_db_options_.allow_concurrent_memtable_write &&
                     write_group.size > 1;
     size_t total_count = 0;
@@ -334,8 +356,10 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     PERF_TIMER_STOP(write_pre_and_post_process_time);
 
     if (!two_write_queues_) {
+      // 开始写memtable
       if (status.ok() && !write_options.disableWAL) {
         PERF_TIMER_GUARD(write_wal_time);
+        // 写入到 WAL 中
         io_s = WriteToWAL(write_group, log_writer, log_used, need_log_sync,
                           need_log_dir_sync, last_sequence + 1);
       }
@@ -386,11 +410,12 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
         }
       }
     }
-
+    // 写完 WAL 之后，进行真正的写入
     if (status.ok()) {
       PERF_TIMER_GUARD(write_memtable_time);
 
       if (!parallel) {
+        // 串行写入
         // w.sequence will be set inside InsertInto
         w.status = WriteBatchInternal::InsertInto(
             write_group, current_sequence, column_family_memtables_.get(),
@@ -399,6 +424,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
             0 /*recovery_log_number*/, this, parallel, seq_per_batch_,
             batch_per_txn_);
       } else {
+        // 并行写入
         write_group.last_sequence = last_sequence;
         write_thread_.LaunchParallelMemTableWriters(&write_group);
         in_parallel_group = true;
@@ -2017,14 +2043,19 @@ size_t DBImpl::GetWalPreallocateBlockSize(uint64_t write_buffer_size) const {
 
 // Default implementations of convenience methods that subclasses of DB
 // can call if they wish
+// 向指定列族写入 默认实现, DB 的子类可以根据需要调用的便捷方法
 Status DB::Put(const WriteOptions& opt, ColumnFamilyHandle* column_family,
                const Slice& key, const Slice& value) {
+  // 如果不带时间戳，就直接写，如果带时间戳，就将原本键和时间戳连接，构造一个含有时间戳的新的键
   if (nullptr == opt.timestamp) {
     // Pre-allocate size of write batch conservatively.
     // 8 bytes are taken by header, 4 bytes for count, 1 byte for type,
     // and we allocate 11 extra bytes for key length, as well as value length.
+    // 保守地预先分配写入批次的大小。 头部占用8个字节，计数占用4个字节，类型占用1个字节，
+    //    // 我们为key长度和value长度分配了11个额外字节。
     WriteBatch batch(key.size() + value.size() + 24);
     Status s = batch.Put(column_family, key, value);
+    // 构造出来 WriteBatch
     if (!s.ok()) {
       return s;
     }
