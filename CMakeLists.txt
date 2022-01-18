@@ -1344,6 +1344,7 @@ if(WITH_TESTS)
         utilities/ttl/ttl_test.cc
         utilities/write_batch_with_index/write_batch_with_index_test.cc
         examples/simple_example.cc
+        examples/read_from_immutable_example.cc
     )
   endif()
   if(WITH_LIBRADOS)

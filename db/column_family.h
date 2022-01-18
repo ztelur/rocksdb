@@ -201,6 +201,7 @@ struct SuperVersion {
   // synchronization (ie db mutex held or on write thread).
   ColumnFamilyData* cfd;
   MemTable* mem;
+  // immutable
   MemTableListVersion* imm;
   Version* current;
   MutableCFOptions mutable_cf_options;

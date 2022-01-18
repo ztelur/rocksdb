@@ -1960,7 +1960,7 @@ void Version::MultiGetBlob(
     }
   }
 }
-
+// 从 sstable 中读取
 void Version::Get(const ReadOptions& read_options, const LookupKey& k,
                   PinnableSlice* value, std::string* timestamp, Status* status,
                   MergeContext* merge_context,

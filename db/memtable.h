@@ -259,7 +259,7 @@ class MemTable {
            SequenceNumber* max_covering_tombstone_seq, SequenceNumber* seq,
            const ReadOptions& read_opts, ReadCallback* callback = nullptr,
            bool* is_blob_index = nullptr, bool do_merge = true);
-
+  // memtable 的 get 指令
   bool Get(const LookupKey& key, std::string* value, std::string* timestamp,
            Status* s, MergeContext* merge_context,
            SequenceNumber* max_covering_tombstone_seq,

@@ -57,7 +57,7 @@ struct DBOptions;
 using KeyHandle = void*;
 
 extern Slice GetLengthPrefixedSlice(const char* data);
-
+// 具备不同数据类型的具体实现
 class MemTableRep {
  public:
   // KeyComparator provides a means to compare keys, which are internal keys

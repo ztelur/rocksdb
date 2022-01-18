@@ -80,11 +80,16 @@ public:
    // All memory is allocated through allocator; nothing to report here
    return 0;
  }
-
+// skipList 的具体实现，callback_func就是指向前面的SaveValue函数的指针
  void Get(const LookupKey& k, void* callback_args,
           bool (*callback_func)(void* arg, const char* entry)) override {
    SkipListRep::Iterator iter(&skip_list_);
    Slice dummy_slice;
+   // // 在 skiplist 中进行查找，从 seek 到的位置开始向后遍历，
+   //   // 遍历 entry 是否符合SaveValue 定义的规则。
+   //   // SaveValue 函数查看当前 entry 是否还是当前查找的 key，如果不是则返回；
+   //   // 查看当前 entry 的 snapshot 是否小于或等于需要查找的 snapshot，不符合则继续循环。
+   //   // 如果 entry 的snapshot 符合上述条件，那么则跳出循环，返回查找结果。
    for (iter.Seek(dummy_slice, k.memtable_key().data());
         iter.Valid() && callback_func(callback_args, iter.key()); iter.Next()) {
    }
