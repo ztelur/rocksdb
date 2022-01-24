@@ -1784,6 +1784,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   TEST_SYNC_POINT("DBImpl::GetImpl:2");
 
   SequenceNumber snapshot;
+  // 获取对应的 seq，用于后续创建 lookupkey
   if (read_options.snapshot != nullptr) {
     if (get_impl_options.callback) {
       // Already calculated based on read_options.snapshot
@@ -1798,6 +1799,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
     // data for the snapshot, so the reader would see neither data that was be
     // visible to the snapshot before compaction nor the newer data inserted
     // afterwards.
+    // 可以先简单认为 seq 就是当前的version最后一次写成功的seq
     if (last_seq_same_as_publish_seq_) {
       snapshot = versions_->LastSequence();
     } else {
@@ -1843,7 +1845,9 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   // First look in the memtable, then in the immutable memtable (if any).
   // s is both in/out. When in, s could either be OK or MergeInProgress.
   // merge_operands will contain the sequence of merges in the latter case.
+  // 生成对应的 lookupkey
   LookupKey lkey(key, snapshot, read_options.timestamp);
+
   PERF_TIMER_STOP(get_snapshot_time);
 
   bool skip_memtable = (read_options.read_tier == kPersistedTier &&

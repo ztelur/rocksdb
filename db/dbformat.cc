@@ -176,6 +176,16 @@ void InternalKeyComparator::FindShortSuccessor(std::string* key) const {
   }
 }
 
+/**
+ * 通过上面的构造函数可以看到在LookupKey中会把全部的internal_key(user_key+seq+type)
+ * 和RocksDB为user_key所添加的内容指针分别保存起来，
+ * 也就是memtable_key保存了内部使用的key,而internal_key保存了RocksDB为构造在内部key添加的内容
+ *
+ * todo: 需要 debug 看看
+ * @param _user_key
+ * @param s
+ * @param ts
+ */
 LookupKey::LookupKey(const Slice& _user_key, SequenceNumber s,
                      const Slice* ts) {
   size_t usize = _user_key.size();

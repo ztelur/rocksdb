@@ -1688,12 +1688,15 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   impl->mutex_.Lock();
   // Handles create_if_missing, error_if_exists
   uint64_t recovered_seq(kMaxSequenceNumber);
+  // 从已有文件恢复
   s = impl->Recover(column_families, false, false, false, &recovered_seq);
   if (s.ok()) {
+    // 创建新的WAL
     uint64_t new_log_number = impl->versions_->NewFileNumber();
     log::Writer* new_log = nullptr;
     const size_t preallocate_block_size =
         impl->GetWalPreallocateBlockSize(max_write_buffer_size);
+    // preallocate 技巧和 rocketmq 比赛中的一致
     s = impl->CreateWAL(new_log_number, 0 /*recycle_log_number*/,
                         preallocate_block_size, &new_log);
     if (s.ok()) {
@@ -1701,6 +1704,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
       impl->logfile_number_ = new_log_number;
       assert(new_log != nullptr);
       assert(impl->logs_.empty());
+      // 将新创建的日志插入到未完全同步的日志列表
       impl->logs_.emplace_back(new_log_number, new_log);
     }
 

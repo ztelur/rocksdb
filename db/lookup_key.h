@@ -16,6 +16,7 @@
 namespace ROCKSDB_NAMESPACE {
 
 // A helper class useful for DBImpl::Get()
+// 核心的数据结构叫做LookupKey 用来构建 LookupKey
 class LookupKey {
  public:
   // Initialize *this for looking up user_key at a snapshot with

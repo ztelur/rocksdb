@@ -927,6 +927,7 @@ void MemTable::GetFromTable(const LookupKey& key,
                             std::string* timestamp, Status* s,
                             MergeContext* merge_context, SequenceNumber* seq,
                             bool* found_final_value, bool* merge_in_progress) {
+  // 构造查询的saver
   Saver saver;
   saver.status = s;
   saver.found_final_value = found_final_value;
@@ -1226,9 +1227,20 @@ size_t MemTable::CountSuccessiveMergeEntries(const LookupKey& key) {
   return num_successive_merges;
 }
 
+/**
+ * 然后我们来看MemTableRep::Get,首先我们需要知道MemTableRep这个类用来抽象不同的MemTable的实现，
+ * 也就是说它是一个虚类，然后不同的MemTable实现了它(通过工厂方法模式维护了包括skiplist,vector等多个工厂，
+ * 用来提供给用户创建不同的memtable管理方式)，这里我们只来分析skiplist也就是默认的MemTable实现.
+
+ * @param k
+ * @param callback_args
+ * @param callback_func
+ */
 void MemTableRep::Get(const LookupKey& k, void* callback_args,
                       bool (*callback_func)(void* arg, const char* entry)) {
   auto iter = GetDynamicPrefixIterator();
+  // 一个是internal_key,一个是memtable_key,那么这两个key分别代表什么呢，我们再次回到LookupKey这个类,
+  // 可以看到这里memtable_key就是(end_-start_),而internal_key就是(end_-kstart_)
   for (iter->Seek(k.internal_key(), k.memtable_key().data());
        iter->Valid() && callback_func(callback_args, iter->key());
        iter->Next()) {
