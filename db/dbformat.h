@@ -280,6 +280,7 @@ class InternalKey {
 
  public:
   InternalKey() {}  // Leave rep_ as empty to indicate it is invalid
+  // RocksDB内部还会维护一个internal_key,这个internal_key格式如下: user_key + sequence + type
   InternalKey(const Slice& _user_key, SequenceNumber s, ValueType t) {
     AppendInternalKey(&rep_, ParsedInternalKey(_user_key, s, t));
   }

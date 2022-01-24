@@ -263,6 +263,8 @@ class ColumnFamilySet;
 
 // This class keeps all the data that a column family needs.
 // Most methods require DB mutex held, unless otherwise noted
+// 用来表示一个ColumnFamily,保存了对应的信息,我们可以看到有ID/name以及当前ColumnFamily对应的所有的version(dummy_versions_).
+// 其中这里的next_/prev_就是在ColumnFamilySet中用来表示所有ColumnFamily的双向链表.
 class ColumnFamilyData {
  public:
   ~ColumnFamilyData();
@@ -636,6 +638,7 @@ class ColumnFamilyData {
 // * GetColumnFamily() -- either inside of DB mutex or from a write thread
 // * GetNextColumnFamilyID(), GetMaxColumnFamily(), UpdateMaxColumnFamily(),
 // NumberOfColumnFamilies -- inside of DB mutex
+// 个叫做ColumnFamilySet的结构来管理的
 class ColumnFamilySet {
  public:
   // ColumnFamilySet supports iteration
@@ -707,7 +710,7 @@ class ColumnFamilySet {
   // helper function that gets called from cfd destructor
   // REQUIRES: DB mutex held
   void RemoveColumnFamily(ColumnFamilyData* cfd);
-
+  // 每一个Column Family都是一个ColumnFamilyData
   // column_families_ and column_family_data_ need to be protected:
   // * when mutating both conditions have to be satisfied:
   // 1. DB mutex locked
@@ -715,6 +718,8 @@ class ColumnFamilySet {
   // * when reading, at least one condition needs to be satisfied:
   // 1. DB mutex locked
   // 2. accessed from a single-threaded write thread
+  // map(column_family_data_)以及一个双向链表(dummy_cfd_).
+  // 其中map用来保存Column Family名字和对应的id以及ColumnFamilyData的映射
   std::unordered_map<std::string, uint32_t> column_families_;
   std::unordered_map<uint32_t, ColumnFamilyData*> column_family_data_;
 

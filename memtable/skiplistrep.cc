@@ -22,6 +22,7 @@ class SkipListRep : public MemTableRep {
 
   friend class LookaheadIterator;
 public:
+ // 最终就是创建SkipListRep对象，在这个对象里面会创建SkipList(class InlineSkipList)
  explicit SkipListRep(const MemTableRep::KeyComparator& compare,
                       Allocator* allocator, const SliceTransform* transform,
                       const size_t lookahead)
@@ -362,7 +363,7 @@ std::string SkipListFactory::GetId() const {
   }
   return id;
 }
-
+// 创建基于 skip list 的 memtable
 MemTableRep* SkipListFactory::CreateMemTableRep(
     const MemTableRep::KeyComparator& compare, Allocator* allocator,
     const SliceTransform* transform, Logger* /*logger*/) {

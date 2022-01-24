@@ -2332,6 +2332,7 @@ Status WriteBatchInternal::InsertInto(
   (void)batch_cnt;
 #endif
   assert(writer->ShouldWriteToMemtable());
+  // 生产 insert
   MemTableInserter inserter(sequence, memtables, flush_scheduler,
                             trim_history_scheduler,
                             ignore_missing_column_families, log_number, db,

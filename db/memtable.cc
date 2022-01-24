@@ -81,6 +81,7 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
                  ? &mem_tracker_
                  : nullptr,
              mutable_cf_options.memtable_huge_page_size),
+      // 核心的memtable实现是在MemTable这个类的table_域 自动进行设置底层的结构
       table_(ioptions.memtable_factory->CreateMemTableRep(
           comparator_, &arena_, mutable_cf_options.prefix_extractor.get(),
           ioptions.logger, column_family_id)),
@@ -526,7 +527,7 @@ Status MemTable::VerifyEncodedEntry(Slice encoded,
       .StripKVO(key, value, value_type)
       .GetStatus();
 }
-
+// 调用该函数将数据写入到 memtable, write_batch会调用
 Status MemTable::Add(SequenceNumber s, ValueType type,
                      const Slice& key, /* user key */
                      const Slice& value,
@@ -538,6 +539,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   //  key bytes    : char[internal_key.size()]
   //  value_size   : varint32 of value.size()
   //  value bytes  : char[value.size()]
+  // 将 key 和  value 合并成同一个 key
   uint32_t key_size = static_cast<uint32_t>(key.size());
   uint32_t val_size = static_cast<uint32_t>(value.size());
   uint32_t internal_key_size = key_size + 8;
@@ -548,8 +550,9 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   std::unique_ptr<MemTableRep>& table =
       type == kTypeRangeDeletion ? range_del_table_ : table_;
   KeyHandle handle = table->Allocate(encoded_len, &buf);
-
+  // 进行对应的拷贝
   char* p = EncodeVarint32(buf, internal_key_size);
+  // 拷贝 key 数据
   memcpy(p, key.data(), key_size);
   Slice key_slice(p, key_size);
   p += key_size;
@@ -557,6 +560,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   EncodeFixed64(p, packed);
   p += 8;
   p = EncodeVarint32(p, val_size);
+  // 拷贝 value 数据
   memcpy(p, value.data(), val_size);
   assert((unsigned)(p + val_size - buf) == (unsigned)encoded_len);
   if (kv_prot_info != nullptr) {
@@ -570,7 +574,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
 
   size_t ts_sz = GetInternalKeyComparator().user_comparator()->timestamp_size();
   Slice key_without_ts = StripTimestampFromUserKey(key, ts_sz);
-
+  // 是否允许并发插入
   if (!allow_concurrent) {
     // Extract prefix for insert with hint.
     if (insert_with_hint_prefix_extractor_ != nullptr &&
@@ -620,6 +624,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
     assert(post_process_info == nullptr);
     UpdateFlushState();
   } else {
+    // 调用对应的接口进行并发插入，比如说 skipList 应该会到该分支
     bool res = (hint == nullptr)
                    ? table->InsertKeyConcurrently(handle)
                    : table->InsertKeyWithHintConcurrently(handle, hint);

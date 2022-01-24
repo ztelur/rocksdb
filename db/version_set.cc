@@ -3965,6 +3965,7 @@ struct VersionSet::ManifestWriter {
   InstrumentedCondVar cv;
   ColumnFamilyData* cfd;
   const MutableCFOptions mutable_cf_options;
+  // 一个VersionEdit的数组，这个数组就是即将要写入到manifest-log文件中的内容
   const autovector<VersionEdit*>& edit_list;
   const std::function<void(const Status&)> manifest_write_callback;
 
@@ -4147,6 +4148,7 @@ Status VersionSet::ProcessManifestWrites(
     const ColumnFamilyOptions* new_cf_options) {
   mu->AssertHeld();
   assert(!writers.empty());
+  // 从队列中拿到第一个writer
   ManifestWriter& first_writer = writers.front();
   ManifestWriter* last_writer = &first_writer;
 
@@ -4157,9 +4159,10 @@ Status VersionSet::ProcessManifestWrites(
   autovector<Version*> versions;
   autovector<const MutableCFOptions*> mutable_cf_options_ptrs;
   std::vector<std::unique_ptr<BaseReferencedVersionBuilder>> builder_guards;
-
+  // 如果要写入的操作中的第一个是一个列组操作，也就是增加列或者修改列
   if (first_writer.edit_list.front()->IsColumnFamilyManipulation()) {
     // No group commits for column family add or drop
+    // 这种情况不能进行 group commit
     LogAndApplyCFHelper(first_writer.edit_list.front());
     batch_edits.push_back(first_writer.edit_list.front());
   } else {
@@ -4324,7 +4327,9 @@ Status VersionSet::ProcessManifestWrites(
   // SwitchMemtable().
   std::unordered_map<uint32_t, MutableCFState> curr_state;
   VersionEdit wal_additions;
+  // 创建新的manifest-log文件，则开始构造对应的文件信息并创建文件
   if (new_descriptor_log) {
+    // 新创建
     pending_manifest_file_number_ = NewFileNumber();
     batch_edits.back()->SetNextFile(next_file_number_.load());
 
@@ -4418,6 +4423,8 @@ Status VersionSet::ProcessManifestWrites(
 #ifndef NDEBUG
       size_t idx = 0;
 #endif
+      // 开始写入对应的VersionEdit的record到文件(最后我们会来看这个record的构成),
+      // 这里看到写入完成后会调用Sync来刷新内容到磁盘,等这些操作都做完之后，则会更新Current文件也就是更新最新的manifest-log文件名到CURRENT文件中.
       for (auto& e : batch_edits) {
         std::string record;
         if (!e->EncodeTo(&record)) {
@@ -4437,6 +4444,7 @@ Status VersionSet::ProcessManifestWrites(
         }
         ++idx;
 #endif /* !NDEBUG */
+        // 写入一个 record
         io_s = descriptor_log_->AddRecord(record);
         if (!io_s.ok()) {
           s = io_s;
@@ -4444,6 +4452,7 @@ Status VersionSet::ProcessManifestWrites(
           break;
         }
       }
+      // 全部写完后，进行 sync
       if (s.ok()) {
         io_s = SyncManifest(db_options_, descriptor_log_->file());
         manifest_io_status = io_s;
@@ -4462,6 +4471,7 @@ Status VersionSet::ProcessManifestWrites(
     if (s.ok()) {
       assert(manifest_io_status.ok());
     }
+    // SetCurrentFile 更新最新的manifest-log文件名到CURRENT文件
     if (s.ok() && new_descriptor_log) {
       io_s = SetCurrentFile(fs_.get(), dbname_, pending_manifest_file_number_,
                             db_directory);
@@ -4510,6 +4520,7 @@ Status VersionSet::ProcessManifestWrites(
 
   // Append the old manifest file to the obsolete_manifest_ list to be deleted
   // by PurgeObsoleteFiles later.
+  // CURRENT文件更新完毕之后，就可以删除老的mainfest文件了.
   if (s.ok() && new_descriptor_log) {
     obsolete_manifests_.emplace_back(
         DescriptorFileName("", manifest_file_number_));
@@ -4629,6 +4640,7 @@ Status VersionSet::ProcessManifestWrites(
   pending_manifest_file_number_ = 0;
 
   // wake up all the waiting writers
+  // 更新manifest_writers_队列，唤醒之前阻塞的内容.
   while (true) {
     ManifestWriter* ready = manifest_writers_.front();
     manifest_writers_.pop_front();
@@ -4667,6 +4679,8 @@ void VersionSet::WakeUpWaitingManifestWriters() {
 
 // 'datas' is grammatically incorrect. We still use this notation to indicate
 // that this variable represents a collection of column_family_data.
+// LogAndApply的时候都会创建一个新的ManifesWriter加入到manifest_writers_队列中.
+// 这里只有当之前保存在队列中 的所有Writer都写入完毕之后才会加入到队列，否则就会等待
 Status VersionSet::LogAndApply(
     const autovector<ColumnFamilyData*>& column_family_datas,
     const autovector<const MutableCFOptions*>& mutable_cf_options_list,
@@ -4713,6 +4727,7 @@ Status VersionSet::LogAndApply(
   ManifestWriter& first_writer = writers.front();
   TEST_SYNC_POINT_CALLBACK("VersionSet::LogAndApply:BeforeWriterWaiting",
                            nullptr);
+  // 等待写完
   while (!first_writer.done && &first_writer != manifest_writers_.front()) {
     first_writer.cv.Wait();
   }
@@ -4746,7 +4761,7 @@ Status VersionSet::LogAndApply(
     }
     return Status::ColumnFamilyDropped();
   }
-
+  // 真正的逻辑
   return ProcessManifestWrites(writers, mu, db_directory, new_descriptor_log,
                                new_cf_options);
 }
@@ -4831,7 +4846,12 @@ Status VersionSet::GetCurrentManifestPath(const std::string& dbname,
   manifest_path->append(fname);
   return Status::OK();
 }
-
+// 看数据的读取以及初始化
+/**
+ * 读取MANIFEST然后来再来将磁盘上读取的ColumnFamily的信息初始化(初始化ColumnFamilySet结构),
+ * 可以看到这里相当于将之前的create/drop 的操作全部回放一遍，
+ * 也就是会调用CreateColumnFamily/DropColumnFamily来将磁盘的信息初始化到内存.
+ */
 Status VersionSet::Recover(
     const std::vector<ColumnFamilyDescriptor>& column_families, bool read_only,
     std::string* db_id) {
@@ -4867,6 +4887,7 @@ Status VersionSet::Recover(
     reporter.status = &log_read_status;
     log::Reader reader(nullptr, std::move(manifest_file_reader), &reporter,
                        true /* checksum */, 0 /* log_number */);
+    // 使用 handler 去便利
     VersionEditHandler handler(read_only, column_families,
                                const_cast<VersionSet*>(this),
                                /*track_missing_files=*/false,
@@ -5866,16 +5887,23 @@ void VersionSet::GetObsoleteFiles(std::vector<ObsoleteFileInfo>* files,
   obsolete_manifests_.swap(*manifest_filenames);
 }
 
+/**
+ * @param cf_options
+ * @param edit
+ * @return
+ */
 ColumnFamilyData* VersionSet::CreateColumnFamily(
     const ColumnFamilyOptions& cf_options, const VersionEdit* edit) {
   assert(edit->is_column_family_add_);
 
   MutableCFOptions dummy_cf_options;
+  // 生成新的 version
   Version* dummy_versions =
       new Version(nullptr, this, file_options_, dummy_cf_options, io_tracer_);
   // Ref() dummy version once so that later we can call Unref() to delete it
   // by avoiding calling "delete" explicitly (~Version is private)
   dummy_versions->Ref();
+  // 真正进行 create
   auto new_cfd = column_family_set_->CreateColumnFamily(
       edit->column_family_name_, edit->column_family_, dummy_versions,
       cf_options);

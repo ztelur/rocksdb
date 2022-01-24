@@ -615,6 +615,7 @@ ColumnFamilyData::ColumnFamilyData(
 }
 
 // DB mutex held
+// 可以看到析构函数中会从双向链表中删除对应的数据,以及处理对应的Version(corrent_).
 ColumnFamilyData::~ColumnFamilyData() {
   assert(refs_.load(std::memory_order_relaxed) == 0);
   // remove from linked list
@@ -1059,12 +1060,14 @@ uint64_t ColumnFamilyData::GetLiveSstFilesSize() const {
   return current_->GetSstFilesSize();
 }
 
+// 创建memtable,然后设置到 ColumnFamilyData 的 mem_ 域中
 MemTable* ColumnFamilyData::ConstructNewMemtable(
     const MutableCFOptions& mutable_cf_options, SequenceNumber earliest_seq) {
   return new MemTable(internal_comparator_, ioptions_, mutable_cf_options,
                       write_buffer_manager_, earliest_seq, id_);
 }
 
+// 创建并且将其设置为自身的 mem
 void ColumnFamilyData::CreateNewMemtable(
     const MutableCFOptions& mutable_cf_options, SequenceNumber earliest_seq) {
   if (mem_ != nullptr) {
@@ -1539,18 +1542,27 @@ size_t ColumnFamilySet::NumberOfColumnFamilies() const {
 }
 
 // under a DB mutex AND write thread
+/**
+ * 创建ColumnFamilyData对象
+ * 将新的创建好的CFD加入到双向链表
+ * 对应的Map数据结构更新数据
+ * @return
+ */
 ColumnFamilyData* ColumnFamilySet::CreateColumnFamily(
     const std::string& name, uint32_t id, Version* dummy_versions,
     const ColumnFamilyOptions& options) {
   assert(column_families_.find(name) == column_families_.end());
+  // 创建ColumnFamilyData对象
   ColumnFamilyData* new_cfd = new ColumnFamilyData(
       id, name, dummy_versions, table_cache_, write_buffer_manager_, options,
       *db_options_, &file_options_, this, block_cache_tracer_, io_tracer_,
       db_session_id_);
+  // 插入到对应 map 中
   column_families_.insert({name, id});
   column_family_data_.insert({id, new_cfd});
   max_column_family_ = std::max(max_column_family_, id);
   // add to linked list
+  // 将新的创建好的CFD加入到双向链表
   new_cfd->next_ = dummy_cfd_;
   auto prev = dummy_cfd_->prev_;
   new_cfd->prev_ = prev;
@@ -1580,6 +1592,8 @@ void ColumnFamilySet::FreeDeadColumnFamilies() {
 void ColumnFamilySet::RemoveColumnFamily(ColumnFamilyData* cfd) {
   auto cfd_iter = column_family_data_.find(cfd->GetID());
   assert(cfd_iter != column_family_data_.end());
+  // 这个函数是是从两个Map中删除对应的ColumnFamily
+  // 只有当所有的引用计数都清零之后， 才需要真正的函数ColumnFamilyData(也就是会从双向链表中删除数据).也就是调用其析构函数
   column_family_data_.erase(cfd_iter);
   column_families_.erase(cfd->GetName());
 }

@@ -721,6 +721,15 @@ bool InlineSkipList<Comparator>::Insert(const char* key) {
   return Insert<false>(key, seq_splice_, false);
 }
 
+// 调用InlineSkipList来对数据进行插入
+// RocksDB会将KV打包成一个key传递给SkipList, 对应的KEY的结构是这样的
+/**
+ *   // Format of an entry is concatenation of:
+  //  key_size     : varint32 of internal_key.size()
+  //  key bytes    : char[internal_key.size()]
+  //  value_size   : varint32 of value.size()
+  //  value bytes  : char[value.size()]
+ */
 template <class Comparator>
 bool InlineSkipList<Comparator>::InsertConcurrently(const char* key) {
   Node* prev[kMaxPossibleHeight];
@@ -800,6 +809,7 @@ template <bool UseCAS>
 bool InlineSkipList<Comparator>::Insert(const char* key, Splice* splice,
                                         bool allow_partial_splice_fix) {
   Node* x = reinterpret_cast<Node*>(const_cast<char*>(key)) - 1;
+  // 获取解析后的 key，因为之前将 key 和 value 进行合并了
   const DecodedKey key_decoded = compare_.decode_key(key);
   int height = x->UnstashHeight();
   assert(height >= 1 && height <= kMaxHeight_);

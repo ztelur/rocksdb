@@ -2716,7 +2716,15 @@ Status DBImpl::CreateColumnFamilies(
   }
   return s;
 }
-
+// 创建对应的列族
+/**
+ * 中首先就是通过调用GetNextColumnFamilyID来得到当前创建的ColumnFamily对应的ID(自增).
+ * 然后再调用LogAndApply来对ColumnFamily 进行对应的操作.最后再返回封装好的ColumnFamilyHandle给调用者.
+ * @param cf_options
+ * @param column_family_name
+ * @param handle
+ * @return
+ */
 Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
                                       const std::string& column_family_name,
                                       ColumnFamilyHandle** handle) {
@@ -2728,6 +2736,7 @@ Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
   s = ColumnFamilyData::ValidateOptions(db_options, cf_options);
   if (s.ok()) {
     for (auto& cf_path : cf_options.cf_paths) {
+      // 根据 options 中创建对应的文件
       s = env_->CreateDirIfMissing(cf_path.path);
       if (!s.ok()) {
         break;
@@ -2740,14 +2749,17 @@ Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
 
   SuperVersionContext sv_context(/* create_superversion */ true);
   {
+    // 加锁
     InstrumentedMutexLock l(&mutex_);
-
+    // 如果当前已经有了该 cf name，则直接返回
     if (versions_->GetColumnFamilySet()->GetColumnFamily(column_family_name) !=
         nullptr) {
       return Status::InvalidArgument("Column family already exists");
     }
+    // 新创建一个
     VersionEdit edit;
     edit.AddColumnFamily(column_family_name);
+    // 调用GetNextColumnFamilyID 获取新的 id
     uint32_t new_id = versions_->GetColumnFamilySet()->GetNextColumnFamilyID();
     edit.SetColumnFamily(new_id);
     edit.SetLogNumber(logfile_number_);
@@ -2757,6 +2769,7 @@ Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
     // ColumnFamilyData object
     {  // write thread
       WriteThread::Writer w;
+      // 设置写入的状态
       write_thread_.EnterUnbatched(&w, &mutex_);
       // LogAndApply will both write the creation in MANIFEST and create
       // ColumnFamilyData object
@@ -2785,7 +2798,7 @@ Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
       }
 
       cfd->set_initialized();
-
+      // 返回封装好的ColumnFamilyHandle给调用者
       *handle = new ColumnFamilyHandleImpl(cfd, this, &mutex_);
       ROCKS_LOG_INFO(immutable_db_options_.info_log,
                      "Created column family [%s] (ID %u)",
