@@ -956,6 +956,7 @@ class AtomicGroupReadBuffer {
 // VersionSet is the collection of versions of all the column families of the
 // database. Each database owns one VersionSet. A VersionSet has access to all
 // column families via ColumnFamilySet, i.e. set of the column families.
+// 表示一堆Version的集合，其实就是 记录了各个版本的信息用来管理整个Version
 class VersionSet {
  public:
   VersionSet(const std::string& dbname, const ImmutableDBOptions* db_options,
@@ -1399,13 +1400,14 @@ class VersionSet {
   std::atomic<uint64_t> last_published_sequence_;
   uint64_t prev_log_number_;  // 0 or backing store for memtable being compacted
 
-  // Opened lazily
+  // Opened lazily 当前manifest-log文件
   std::unique_ptr<log::Writer> descriptor_log_;
 
   // generates a increasing version number for every new version
   uint64_t current_version_number_;
 
   // Queue of writers to the manifest file
+  // 需要写入到manifest-log文件中的内容
   std::deque<ManifestWriter*> manifest_writers_;
 
   // Current size of manifest file

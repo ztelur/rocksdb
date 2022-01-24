@@ -29,6 +29,8 @@ void VersionEditHandlerBase::Iterate(log::Reader& reader,
   Status s = Initialize();
   while (reader.LastRecordEnd() < max_manifest_read_size_ && s.ok() &&
          reader.ReadRecord(&record, &scratch) && log_read_status->ok()) {
+    // 看到这里相当于将之前的create/drop 的操作全部回放一遍，
+    // 也就是会调用CreateColumnFamily/DropColumnFamily来将磁盘的信息初始化到内存.
     VersionEdit edit;
     s = edit.DecodeFrom(record);
     if (!s.ok()) {

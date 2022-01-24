@@ -2270,6 +2270,22 @@ class MemTableInserter : public WriteBatch::Handler {
 // 2) During Write(), in a single-threaded write thread
 // 3) During Write(), in a concurrent context where memtables has been cloned
 // The reason is that it calls memtables->Seek(), which has a stateful cache
+// 把batches[i]插入memtable，其中i的取值范围是0到num_batches-1
+//
+// 如果ignore_missing_column_families == ture，涉及不存在的列族的writebatch会被忽略
+// 如果ignore_missing_column_families == false，如果找到对不存在的列族的引用，则批处理将停止，并且将返回 InvalidArgument()
+// 在这一点上，批量写入可能仅部分应用。
+//
+// 如果 log_number 非零，则仅当 memtables->GetLogNumber() >= log_number 时才会更新 memtable。
+//
+// 如果flush_scheduler 为非空，则在应刷新memtable 时将调用它。
+//
+// 在并发使用下，调用者负责确保 memtables 对象本身是线程本地的。
+// 该函数只能在以下条件下调用：
+// 1) 在 Recovery() 期间
+// 2) 在 Write() 期间，在单线程写入线程中
+// 3) 在 Write() 期间，在已克隆内存表的并发上下文中
+// 原因是它调用 memtables->Seek()，它有一个有状态的缓存
 Status WriteBatchInternal::InsertInto(
     WriteThread::WriteGroup& write_group, SequenceNumber sequence,
     ColumnFamilyMemTables* memtables, FlushScheduler* flush_scheduler,
@@ -2281,6 +2297,7 @@ Status WriteBatchInternal::InsertInto(
       ignore_missing_column_families, recovery_log_number, db,
       concurrent_memtable_writes, nullptr /* prot_info */,
       nullptr /*has_valid_writes*/, seq_per_batch, batch_per_txn);
+  // write_group 对每个 write_group 进行写入
   for (auto w : write_group) {
     if (w->CallbackFailed()) {
       continue;
@@ -2315,6 +2332,7 @@ Status WriteBatchInternal::InsertInto(
   (void)batch_cnt;
 #endif
   assert(writer->ShouldWriteToMemtable());
+  // 生产 insert
   MemTableInserter inserter(sequence, memtables, flush_scheduler,
                             trim_history_scheduler,
                             ignore_missing_column_families, log_number, db,

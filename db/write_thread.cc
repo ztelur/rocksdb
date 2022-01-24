@@ -221,15 +221,28 @@ void WriteThread::SetState(Writer* w, uint8_t new_state) {
   }
 }
 
+// 将 w 链接到 newest_writer 列表。如果 w 直接链接到领导位置，则返回 true。
+// 无需外部锁定即可安全地从多个线程调用。
+// newest_writer是一个指针，指向一个std::atomic<Writer*>元素，
+// 即指向一个原子访问的指向Writer的指针
+// 无锁算法
 bool WriteThread::LinkOne(Writer* w, std::atomic<Writer*>* newest_writer) {
   assert(newest_writer != nullptr);
+  // 初始时Writer的状态是STATE_INIT
   assert(w->state == STATE_INIT);
+  // 获取newset_writer当前的值
   Writer* writers = newest_writer->load(std::memory_order_relaxed);
+  // 不断尝试
   while (true) {
     // If write stall in effect, and w->no_slowdown is not true,
     // block here until stall is cleared. If its true, then return
     // immediately
+    // 如果写停顿有效，并且 w->no_slowdown 不为真，则在此处阻塞，直到停顿被清除。如果为真，则立即返回
     if (writers == &write_stall_dummy_) {
+        // writers是当前newest_writer的值
+        // write_stall_dummy_ 是用于指示写入停止条件的虚拟写入器。
+        // 这将被领导者插入到Writer队列的尾部，所以新的Writer可以检查到这个状态并进行处理
+        // 如果不允许写停顿，就返回写失败
       if (w->no_slowdown) {
         w->status = Status::Incomplete("Write stall");
         SetState(w, STATE_COMPLETED);
@@ -249,7 +262,9 @@ bool WriteThread::LinkOne(Writer* w, std::atomic<Writer*>* newest_writer) {
         }
       }
     }
+    // 将w的指向old的指针指向 writers
     w->link_older = writers;
+    // cas 进行操作。wal_write_group 是从前边刚获取的
     if (newest_writer->compare_exchange_weak(writers, w)) {
       return (writers == nullptr);
     }
@@ -322,6 +337,7 @@ void WriteThread::CompleteLeader(WriteGroup& write_group) {
 void WriteThread::CompleteFollower(Writer* w, WriteGroup& write_group) {
   assert(write_group.size > 1);
   assert(w != write_group.leader);
+  // 将 writer 从 group 中删除掉
   if (w == write_group.last_writer) {
     w->link_older->link_newer = nullptr;
     write_group.last_writer = w->link_older;
@@ -378,10 +394,22 @@ void WriteThread::EndWriteStall() {
 }
 
 static WriteThread::AdaptationContext jbg_ctx("JoinBatchGroup");
+// 将Writer加入队列，多个Writer构成一个Group
+// 将Writer加入newest_writer_链表
+// 根据加入链表返回的状态（是否成为了领导者），修改Writer的状态，或等待当前的领导返回状态
+// 可以存在多个写线程，但是一次只有一个领导线程，通过这种方式来保护多线程写入的正确性
+//
+/// 将 w 注册为批处理组的一部分，等待调用者执行某些工作，然后返回编写者的当前状态。
+/// 如果 w 已成为写入批处理组的领导者，则返回 STATE_GROUP_LEADER。
+/// 如果 w 已成为顺序批处理组的一部分并且领导者已执行写入，则返回 STATE_DONE。
+/// 如果 w 已成为并行批处理组的一部分并负责更新内存表，则返回 STATE_PARALLEL_MEMTABLE_WRITER。
+/// \param w 作为批处理组的一部分执行的Writer
+/// 调用此函数时不应保留 db 互斥锁，因为它会阻塞。
 void WriteThread::JoinBatchGroup(Writer* w) {
   TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:Start", w);
   assert(w->batch != nullptr);
-
+  // / 将 w 链接到 newest_writer_ 列表。如果 w 直接链接到领导位置，则返回 true。
+  //  // 无需外部锁定即可安全地从多个线程调用。
   bool linked_as_leader = LinkOne(w, &newest_writer_);
 
   if (linked_as_leader) {
@@ -389,7 +417,15 @@ void WriteThread::JoinBatchGroup(Writer* w) {
   }
 
   TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:Wait", w);
-
+  // 等待，直到：
+  //     * 1) 现有领导在结束时选择我们成为新领导
+  //     * 2）现有领导选我们成为它的follewer并且
+  //     * 2.1）代表我们完成内存表写入
+  //     * 2.2）或者告诉我们以并行方式完成内存表写入
+  //     * 3）（流水线写入）现有的领导者选择我们作为其追随者并为我们完成book-keeping和 WAL 写入，
+  //     *      将我们作为待处理的内存写入者排队，以及
+  //     * 3.1) 我们成为 memtable writer 组长，或者
+  //     * 3.2）现有的memtable writer组长告诉我们并行完成memtable write。
   if (!linked_as_leader) {
     /**
      * Wait util:
@@ -405,13 +441,20 @@ void WriteThread::JoinBatchGroup(Writer* w) {
      *      writes in parallel.
      */
     TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:BeganWaiting", w);
+    // 如果writer插入group之后没有成为leader，则会调用AwaitState等待被唤醒
     AwaitState(w, STATE_GROUP_LEADER | STATE_MEMTABLE_WRITER_LEADER |
                       STATE_PARALLEL_MEMTABLE_WRITER | STATE_COMPLETED,
                &jbg_ctx);
     TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:DoneWaiting", w);
   }
 }
-
+// 将上述的单向链表构建成完整的双向链表，（见函数d
+//返回整个writegroup所有writebatch的大小总和
+// 构造一个由leader领导的写批处理组，它应该是当前线程上传递给JoinBatchGroup的Writer。
+//
+// Writer leader: 状态为 STATE_GROUP_LEADER 的Writer
+// WriteGroup write_group: 组成员的 Out-param
+// 返回: 批处理组总字节大小
 size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
                                             WriteGroup* write_group) {
   assert(leader->link_older == nullptr);
@@ -445,6 +488,8 @@ size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
   // Tricky. Iteration start (leader) is exclusive and finish
   // (newest_writer) is inclusive. Iteration goes from old to new.
   Writer* w = leader;
+  // 一直判断一个wal_wait_group 到底有多少，中间有些条件，会导致不能并发提交，
+  // 所以直接break，然后处理
   while (w != newest_writer) {
     assert(w->link_newer);
     w = w->link_newer;
@@ -594,6 +639,7 @@ void WriteThread::LaunchParallelMemTableWriters(WriteGroup* write_group) {
   assert(write_group != nullptr);
   write_group->running.store(write_group->size);
   for (auto w : *write_group) {
+    // 每次setstate就将会唤醒之前阻塞的Writer.
     SetState(w, STATE_PARALLEL_MEMTABLE_WRITER);
   }
 }
@@ -634,6 +680,7 @@ void WriteThread::ExitAsBatchGroupFollower(Writer* w) {
 static WriteThread::AdaptationContext eabgl_ctx("ExitAsBatchGroupLeader");
 void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
                                          Status& status) {
+  // first and last
   Writer* leader = write_group.leader;
   Writer* last_writer = write_group.last_writer;
   assert(leader->link_older == nullptr);
@@ -648,17 +695,22 @@ void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
   if (status.ok() && !write_group.status.ok()) {
     status = write_group.status;
   }
-
+  // 分为两种情况 第一种是已经被当前的leader打包写入到WAL，
+  // 这些writer(包括leader自己)需要将他们链接到memtable writer list.
+  // 还有一种情况，那就是还没有写入WAL的，此时这类writer则需要选择一个leader然后继续写入WAL.
   if (enable_pipelined_write_) {
     // Notify writers don't write to memtable to exit.
+    // 从最后一个writer，向前一个开始
     for (Writer* w = last_writer; w != leader;) {
       Writer* next = w->link_older;
       w->status = status;
+      // 如果不需要写入 memtable，比如禁用掉 memtable 的场景，则调用 complteteFollower
       if (!w->ShouldWriteToMemtable()) {
         CompleteFollower(w, write_group);
       }
       w = next;
     }
+    // 如果 leader 也不需要写入 memtable
     if (!leader->ShouldWriteToMemtable()) {
       CompleteLeader(write_group);
     }
@@ -674,6 +726,7 @@ void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
     if (!has_dummy) {
       // We find at least one pending writer when we insert dummy. We search
       // for next leader from there.
+      // 找到下一个 leader
       next_leader = FindNextLeader(expected, last_writer);
       assert(next_leader != nullptr && next_leader != last_writer);
     }
@@ -683,6 +736,7 @@ void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
     // We have to link our group to memtable writer queue before wake up the
     // next leader or set newest_writer_ to null, otherwise the next leader
     // can run ahead of us and link to memtable writer queue before we do.
+    // 将队列中剩余的 writer 写入到 memtable 中
     if (write_group.size > 0) {
       if (LinkGroup(write_group, &newest_memtable_writer_)) {
         // The leader can now be different from current writer.

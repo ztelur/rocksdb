@@ -155,10 +155,10 @@ bool MemTableListVersion::GetFromList(
     SequenceNumber* max_covering_tombstone_seq, SequenceNumber* seq,
     const ReadOptions& read_opts, ReadCallback* callback, bool* is_blob_index) {
   *seq = kMaxSequenceNumber;
-
+  // 对每个immutable进行查询，
   for (auto& memtable : *list) {
     SequenceNumber current_seq = kMaxSequenceNumber;
-
+    // 因为immutable和memtable是相同的结构，下面的查询接口也是一模一样的
     bool done = memtable->Get(key, value, timestamp, s, merge_context,
                               max_covering_tombstone_seq, &current_seq,
                               read_opts, callback, is_blob_index);

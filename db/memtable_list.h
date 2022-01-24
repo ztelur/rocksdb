@@ -62,6 +62,8 @@ class MemTableListVersion {
            SequenceNumber* max_covering_tombstone_seq, SequenceNumber* seq,
            const ReadOptions& read_opts, ReadCallback* callback = nullptr,
            bool* is_blob_index = nullptr);
+  // memlist_中存储的是所有还没有刷新的不可变的immutable
+  // 遍历每个immutable
 
   bool Get(const LookupKey& key, std::string* value, std::string* timestamp,
            Status* s, MergeContext* merge_context,

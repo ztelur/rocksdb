@@ -81,6 +81,7 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
                  ? &mem_tracker_
                  : nullptr,
              mutable_cf_options.memtable_huge_page_size),
+      // 核心的memtable实现是在MemTable这个类的table_域 自动进行设置底层的结构
       table_(ioptions.memtable_factory->CreateMemTableRep(
           comparator_, &arena_, mutable_cf_options.prefix_extractor.get(),
           ioptions.logger, column_family_id)),
@@ -526,7 +527,7 @@ Status MemTable::VerifyEncodedEntry(Slice encoded,
       .StripKVO(key, value, value_type)
       .GetStatus();
 }
-
+// 调用该函数将数据写入到 memtable, write_batch会调用
 Status MemTable::Add(SequenceNumber s, ValueType type,
                      const Slice& key, /* user key */
                      const Slice& value,
@@ -538,6 +539,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   //  key bytes    : char[internal_key.size()]
   //  value_size   : varint32 of value.size()
   //  value bytes  : char[value.size()]
+  // 将 key 和  value 合并成同一个 key
   uint32_t key_size = static_cast<uint32_t>(key.size());
   uint32_t val_size = static_cast<uint32_t>(value.size());
   uint32_t internal_key_size = key_size + 8;
@@ -548,8 +550,9 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   std::unique_ptr<MemTableRep>& table =
       type == kTypeRangeDeletion ? range_del_table_ : table_;
   KeyHandle handle = table->Allocate(encoded_len, &buf);
-
+  // 进行对应的拷贝
   char* p = EncodeVarint32(buf, internal_key_size);
+  // 拷贝 key 数据
   memcpy(p, key.data(), key_size);
   Slice key_slice(p, key_size);
   p += key_size;
@@ -557,6 +560,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   EncodeFixed64(p, packed);
   p += 8;
   p = EncodeVarint32(p, val_size);
+  // 拷贝 value 数据
   memcpy(p, value.data(), val_size);
   assert((unsigned)(p + val_size - buf) == (unsigned)encoded_len);
   if (kv_prot_info != nullptr) {
@@ -570,7 +574,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
 
   size_t ts_sz = GetInternalKeyComparator().user_comparator()->timestamp_size();
   Slice key_without_ts = StripTimestampFromUserKey(key, ts_sz);
-
+  // 是否允许并发插入
   if (!allow_concurrent) {
     // Extract prefix for insert with hint.
     if (insert_with_hint_prefix_extractor_ != nullptr &&
@@ -620,6 +624,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
     assert(post_process_info == nullptr);
     UpdateFlushState();
   } else {
+    // 调用对应的接口进行并发插入，比如说 skipList 应该会到该分支
     bool res = (hint == nullptr)
                    ? table->InsertKeyConcurrently(handle)
                    : table->InsertKeyWithHintConcurrently(handle, hint);
@@ -858,7 +863,7 @@ static bool SaveValue(void* arg, const char* entry) {
   // s->state could be Corrupt, merge or notfound
   return false;
 }
-
+// 从 membtable 读取的真正逻辑所在函数
 bool MemTable::Get(const LookupKey& key, std::string* value,
                    std::string* timestamp, Status* s,
                    MergeContext* merge_context,
@@ -887,6 +892,8 @@ bool MemTable::Get(const LookupKey& key, std::string* value,
   size_t ts_sz = GetInternalKeyComparator().user_comparator()->timestamp_size();
   Slice user_key_without_ts = StripTimestampFromUserKey(key.user_key(), ts_sz);
   if (bloom_filter_) {
+    // 当同时设置了 memtable_whole_key_filtering 和 prefix_extractor_ 时，
+    //    // 只对 Get() 进行全键过滤以节省 CPU
     // when both memtable_whole_key_filtering and prefix_extractor_ are set,
     // only do whole key filtering for Get() to save CPU
     if (moptions_.memtable_whole_key_filtering) {
@@ -900,6 +907,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value,
   }
 
   if (bloom_filter_ && !may_contain) {
+    // 如果前缀布隆表示该键不存在，则 iter 为空
     // iter is null if prefix bloom says the key does not exist
     PERF_COUNTER_ADD(bloom_memtable_miss_count, 1);
     *seq = kMaxSequenceNumber;
@@ -907,6 +915,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value,
     if (bloom_filter_) {
       PERF_COUNTER_ADD(bloom_memtable_hit_count, 1);
     }
+    // 如果表示存在，则需要到memtable跳表中查询 函数
     GetFromTable(key, *max_covering_tombstone_seq, do_merge, callback,
                  is_blob_index, value, timestamp, s, merge_context, seq,
                  &found_final_value, &merge_in_progress);
@@ -948,6 +957,8 @@ void MemTable::GetFromTable(const LookupKey& key,
   saver.is_blob_index = is_blob_index;
   saver.do_merge = do_merge;
   saver.allow_data_in_errors = moptions_.allow_data_in_errors;
+  // 去跳表中获取数据
+  // SaveValue是一个指向函数的指针，用来定义后面遍历跳表时需要执行的逻辑。它本身就是一个函数名称
   table_->Get(key, &saver, SaveValue);
   *seq = saver.seq;
 }
@@ -1236,11 +1247,15 @@ size_t MemTable::CountSuccessiveMergeEntries(const LookupKey& key) {
  * @param callback_args
  * @param callback_func
  */
+// 该方法会被不同的实现进行重写
 void MemTableRep::Get(const LookupKey& k, void* callback_args,
                       bool (*callback_func)(void* arg, const char* entry)) {
+  // MemTable的实现有多种，但是都被封装成了使用迭代器进行查询
+  // 获取memtable的迭代器
   auto iter = GetDynamicPrefixIterator();
   // 一个是internal_key,一个是memtable_key,那么这两个key分别代表什么呢，我们再次回到LookupKey这个类,
   // 可以看到这里memtable_key就是(end_-start_),而internal_key就是(end_-kstart_)
+  // 通过迭代器的模式去寻找对应的key
   for (iter->Seek(k.internal_key(), k.memtable_key().data());
        iter->Valid() && callback_func(callback_args, iter->key());
        iter->Next()) {

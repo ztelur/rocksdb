@@ -57,7 +57,7 @@ struct DBOptions;
 using KeyHandle = void*;
 
 extern Slice GetLengthPrefixedSlice(const char* data);
-
+// 具备不同数据类型的具体实现
 class MemTableRep {
  public:
   // KeyComparator provides a means to compare keys, which are internal keys
@@ -300,7 +300,7 @@ class MemTableRepFactory : public Customizable {
   static Status CreateFromString(const ConfigOptions& config_options,
                                  const std::string& id,
                                  std::unique_ptr<MemTableRepFactory>* factory);
-
+  //
   virtual MemTableRep* CreateMemTableRep(const MemTableRep::KeyComparator&,
                                          Allocator*, const SliceTransform*,
                                          Logger* logger) = 0;

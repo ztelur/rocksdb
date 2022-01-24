@@ -1517,7 +1517,7 @@ Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
   ColumnFamilyOptions cf_options(options);
   // 存储列族描述符的动态数组
   std::vector<ColumnFamilyDescriptor> column_families;
-  // 初始时只有一个默认列族
+  // 初始时只有一个默认列族，名字就叫default
   column_families.push_back(
       // kDefaultColumnFamilyName就是default
       ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_options));
@@ -1645,16 +1645,15 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
 
   // 上面执行的不是打开数据库的操作，而是新建一个指向数据库的指针，按照给定的值进行赋值
   // 后面的代码才是实际打开数据库的逻辑，进一步填满这个类，并创建相关文件
-
   s = impl->env_->CreateDirIfMissing(impl->immutable_db_options_.GetWalDir());
-  // 如果找到则创建wal的文件夹
+  // 如果找不到则创建wal的文件夹
   if (s.ok()) {
-    // 找到每一个immutable的路径
+    // 确定每一个immutable的路径
     std::vector<std::string> paths;
     for (auto& db_path : impl->immutable_db_options_.db_paths) {
       paths.emplace_back(db_path.path);
     }
-    // 找到每一个列族的路径
+    // 确定每一个列族的路径
     for (auto& cf : column_families) {
       for (auto& cf_path : cf.options.cf_paths) {
         paths.emplace_back(cf_path.path);
@@ -1662,6 +1661,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     }
     // 以上路径如有缺失，则新建
     for (auto& path : paths) {
+      // 例如 "/tmp/rocksdb_simple_example"
       s = impl->env_->CreateDirIfMissing(path);
       if (!s.ok()) {
         break;
@@ -1692,8 +1692,10 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   s = impl->Recover(column_families, false, false, false, &recovered_seq);
   if (s.ok()) {
     // 创建新的WAL
+    // 拿到一个新的 log number
     uint64_t new_log_number = impl->versions_->NewFileNumber();
     log::Writer* new_log = nullptr;
+    // 预先分配文件大小，和rockmq比赛的一样 创建新的WAL
     const size_t preallocate_block_size =
         impl->GetWalPreallocateBlockSize(max_write_buffer_size);
     // preallocate 技巧和 rocketmq 比赛中的一致
@@ -1709,15 +1711,20 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     }
 
     if (s.ok()) {
+      // 设置列族句柄
       // set column family handles
       for (auto cf : column_families) {
+        // 根据列族的名字获取这个列族的列族数据
         auto cfd =
             impl->versions_->GetColumnFamilySet()->GetColumnFamily(cf.name);
+        // 如果这个列族的列族数据非空
         if (cfd != nullptr) {
+          // 创建这个列族的句柄并插入到handles当中
           handles->push_back(
               new ColumnFamilyHandleImpl(cfd, impl, &impl->mutex_));
           impl->NewThreadStatusCfInfo(cfd);
         } else {
+          // 如果这个列族的数据是空的，就创建
           if (db_options.create_missing_column_families) {
             // missing column family, create it
             ColumnFamilyHandle* handle;
@@ -1736,6 +1743,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
         }
       }
     }
+    //  superversion相关
     if (s.ok()) {
       SuperVersionContext sv_context(/* create_superversion */ true);
       for (auto cfd : *impl->versions_->GetColumnFamilySet()) {
@@ -1762,6 +1770,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
       // empty, and thus missing the consecutive seq hint to distinguish
       // middle-log corruption to corrupted-log-remained-after-recovery. This
       // case also will be addressed by a dummy write.
+
       if (recovered_seq != kMaxSequenceNumber) {
         WriteBatch empty_batch;
         WriteBatchInternal::SetSequence(&empty_batch, recovered_seq);
@@ -1818,13 +1827,16 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   if (s.ok()) {
     // Persist RocksDB Options before scheduling the compaction.
     // The WriteOptionsFile() will release and lock the mutex internally.
+    // 在安排压缩之前持久化 RocksDB 选项。 WriteOptionsFile() 将在内部释放和锁定互斥锁。
     persist_options_status = impl->WriteOptionsFile(
         false /*need_mutex_lock*/, false /*need_enter_write_thread*/);
 
     *dbptr = impl;
     impl->opened_successfully_ = true;
+
     impl->DeleteObsoleteFiles();
     TEST_SYNC_POINT("DBImpl::Open:AfterDeleteFiles");
+    // 启动后台进程
     impl->MaybeScheduleFlushOrCompaction();
   } else {
     persist_options_status.PermitUncheckedError();
