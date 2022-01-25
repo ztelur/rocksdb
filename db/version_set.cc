@@ -152,13 +152,24 @@ class FilePicker {
   }
 
   int GetCurrentLevel() const { return curr_level_; }
-
+  /**
+   * 这个函数他会遍历所有的level,然后再遍历每个level的所有的文件,
+   * 这里会对level 0的文件做一个特殊处理，这是因为只有level0的sst的range不是有序的，
+   * 因此我们每次查找需要查找所有的文件，也就是会一个个的遍历.
+   *
+   * 而在非level0,我们只需要按照二分查找来得到对应的文件即可,如果二分查找不存在，那么我就需要进入下一个level进行查找.
+   * @return
+   */
   FdWithKeyRange* GetNextFile() {
     while (!search_ended_) {  // Loops over different levels.
+      // 一直便利，知道index超出当前level的文件数量
       while (curr_index_in_curr_level_ < curr_file_level_->num_files) {
         // Loops over all files in current level.
+        // 取出其中一个 FileIndexer
         FdWithKeyRange* f = &curr_file_level_->files[curr_index_in_curr_level_];
+        // 记录命中的level 是当前等级
         hit_file_level_ = curr_level_;
+        // 是否命中的文件是level 中的最后一个
         is_hit_file_last_in_level_ =
             curr_index_in_curr_level_ == curr_file_level_->num_files - 1;
         int cmp_largest = -1;
@@ -171,15 +182,21 @@ class FilePicker {
         // highly tuned to minimize number of tables queried by each query,
         // so it is unlikely that key range filtering is more efficient than
         // querying the files.
+        // 如果 level 大于1 或者 当前 等级有三个以上的文件，此时才进行 key range filter 处理
         if (num_levels_ > 1 || curr_file_level_->num_files > 3) {
           // Check if key is within a file's range. If search left bound and
           // right bound point to the same find, we are sure key falls in
           // range.
+          /**
+           * RocksDB使用了一个技巧用来加快二分查找的速度，每次更新sst的时候，
+           * RocksDB都会调用FileIndexer::UpdateIndex来更新这样的一个结构,
+           * 这个结构就是FileIndexer，它主要是用来保存每一个level和level+1的key范围的关联信息
+           */
           assert(curr_level_ == 0 ||
                  curr_index_in_curr_level_ == start_index_in_curr_level_ ||
                  user_comparator_->CompareWithoutTimestamp(
                      user_key_, ExtractUserKey(f->smallest_key)) <= 0);
-
+          // 使用 FileIndexer 来判断是否在 sst table 中
           int cmp_smallest = user_comparator_->CompareWithoutTimestamp(
               user_key_, ExtractUserKey(f->smallest_key));
           if (cmp_smallest >= 0) {
@@ -190,6 +207,7 @@ class FilePicker {
           // Setup file search bound for the next level based on the
           // comparison results
           if (curr_level_ > 0) {
+            // 找下一个等级的 indexer，对于 0 level 的不行，因为它的key是可能会重复的
             file_indexer_->GetNextLevelIndex(curr_level_,
                                             curr_index_in_curr_level_,
                                             cmp_smallest, cmp_largest,
@@ -199,9 +217,11 @@ class FilePicker {
           // Key falls out of current file's range
           if (cmp_smallest < 0 || cmp_largest > 0) {
             if (curr_level_ == 0) {
+              // 如果是 0， 则继续，因为 level = 0 的 sstable 可能会重复
               ++curr_index_in_curr_level_;
               continue;
             } else {
+              // 其他的level，直接break，到上一层
               // Search next level.
               break;
             }
@@ -215,8 +235,10 @@ class FilePicker {
         } else {
           ++curr_index_in_curr_level_;
         }
+        // 找到对应的 indexer
         return f;
       }
+      // 开始搜索下一个 level 的文件，进行判断，是否要结束整个loop，也会更新 curr_file_level_ 的值
       // Start searching next level.
       search_ended_ = !PrepareNextLevel();
     }
@@ -243,6 +265,7 @@ class FilePicker {
   bool search_ended_;
   bool is_hit_file_last_in_level_;
   LevelFilesBrief* curr_file_level_;
+  // 当前 level 级别的 index
   unsigned int curr_index_in_curr_level_;
   unsigned int start_index_in_curr_level_;
   Slice user_key_;
@@ -1990,7 +2013,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
   bool is_blob_index = false;
   bool* const is_blob_to_use = is_blob ? is_blob : &is_blob_index;
   BlobFetcher blob_fetcher(this, read_options);
-
+  // 类只要是根据传递进来的文件元信息来查找对应的key
   GetContext get_context(
       user_comparator(), merge_operator_, info_log_, db_statistics_,
       status->ok() ? GetContext::kNotFound : GetContext::kMerge, user_key,
@@ -2004,6 +2027,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
     pinned_iters_mgr.StartPinning();
   }
 
+  // FilePicker,这个类主要是根据传递进来的key来选择对应的文件
   FilePicker fp(user_key, ikey, &storage_info_.level_files_brief_,
                 storage_info_.num_non_empty_levels_,
                 &storage_info_.file_indexer_, user_comparator(),

@@ -700,7 +700,8 @@ struct Saver {
   }
 };
 }  // namespace
-
+// 找到值后会进行被调用，然后塞入值
+// 第一个参数是之前保存的Saver对象，第二个则就是我们在skiplist中定位到的位置
 static bool SaveValue(void* arg, const char* entry) {
   Saver* s = reinterpret_cast<Saver*>(arg);
   assert(s != nullptr);
@@ -726,6 +727,7 @@ static bool SaveValue(void* arg, const char* entry) {
   const Comparator* user_comparator =
       s->mem->GetInternalKeyComparator().user_comparator();
   size_t ts_sz = user_comparator->timestamp_size();
+  // 检查得到的key和传入的key是否一致
   if (user_comparator->EqualWithoutTimestamp(user_key_slice,
                                              s->key->user_key())) {
     // Correct user key
@@ -734,17 +736,25 @@ static bool SaveValue(void* arg, const char* entry) {
     SequenceNumber seq;
     UnPackSequenceAndType(tag, &seq, &type);
     // If the value is not in the snapshot, skip it
+    // 可能不是同一个版本的，所以需要返回true，继续向下查询。因为会返回小于输入 seq 的值，所以需要继续查询
+    /**
+     * 查询 key1-3
+     * key0-0 key1-4 key1-3 key1-2 key1-1 key2-1
+     * 会seek到 key1-2 key1-1 和 key1-3 当然顺序还需要再看
+     *
+     */
     if (!s->CheckCallback(seq)) {
       return true;  // to continue to the next seq
     }
 
     s->seq = seq;
-
+    // 检查type，根据type 进行不同的操作
     if ((type == kTypeValue || type == kTypeMerge || type == kTypeBlobIndex) &&
         max_covering_tombstone_seq > seq) {
       type = kTypeRangeDeletion;
     }
     switch (type) {
+        // 大value 索引
       case kTypeBlobIndex:
         if (s->is_blob_index == nullptr) {
           ROCKS_LOG_ERROR(s->logger, "Encounter unexpected blob index.");
@@ -761,6 +771,7 @@ static bool SaveValue(void* arg, const char* entry) {
         }
         FALLTHROUGH_INTENDED;
       case kTypeValue: {
+        // 如果会inplace 更新，则需要加锁
         if (s->inplace_update_support) {
           s->mem->GetLock(s->key->user_key())->ReadLock();
         }
@@ -788,6 +799,7 @@ static bool SaveValue(void* arg, const char* entry) {
         } else if (s->value != nullptr) {
           s->value->assign(v.data(), v.size());
         }
+        // 如果会 inplace 更新，则需要解锁
         if (s->inplace_update_support) {
           s->mem->GetLock(s->key->user_key())->ReadUnlock();
         }
@@ -855,6 +867,7 @@ static bool SaveValue(void* arg, const char* entry) {
           msg.append("seq: " + std::to_string(seq) + ".");
         }
         *(s->status) = Status::Corruption(msg.c_str());
+        // 停止搜索
         return false;
       }
     }
@@ -1257,6 +1270,7 @@ void MemTableRep::Get(const LookupKey& k, void* callback_args,
   // 可以看到这里memtable_key就是(end_-start_),而internal_key就是(end_-kstart_)
   // 通过迭代器的模式去寻找对应的key
   for (iter->Seek(k.internal_key(), k.memtable_key().data());
+       // 如果成功，则调用 callback_func 也就是 SaveValue 来将值会填进去
        iter->Valid() && callback_func(callback_args, iter->key());
        iter->Next()) {
   }

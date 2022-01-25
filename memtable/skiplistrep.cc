@@ -196,6 +196,7 @@ public:
     void Prev() override { iter_.Prev(); }
 
     // Advance to the first entry with a key >= target
+    // 正向查询
     void Seek(const Slice& user_key, const char* memtable_key) override {
       if (memtable_key != nullptr) {
         iter_.Seek(memtable_key);
@@ -204,6 +205,7 @@ public:
       }
     }
 
+    // 反向查询
     // Retreat to the last entry with a key <= target
     void SeekForPrev(const Slice& user_key, const char* memtable_key) override {
       if (memtable_key != nullptr) {

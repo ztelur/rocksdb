@@ -39,6 +39,12 @@ struct FileLevel;
 // only N files from level below (where N is max_bytes_for_level_multiplier).
 // So on level L, we will only look at ~N files instead of N^L files on the
 // naive approach.
+/**
+ * 这里RocksDB使用了一个技巧用来加快二分查找的速度，每次更新sst的时候，
+ * RocksDB都会调用FileIndexer::UpdateIndex来更新这样的一个结构,这个结构就是FileIndexer，
+ * 它主要是用来保存每一个level和level+1的key范围的关联信息，这样当我们在level查找的时候，
+ * 如果没有查找到信息，那么我们将会迅速得到下一个level需要查找的文件范围.
+ */
 class FileIndexer {
  public:
   explicit FileIndexer(const Comparator* ucmp);
@@ -70,21 +76,28 @@ class FileIndexer {
   struct IndexUnit {
     IndexUnit()
       : smallest_lb(0), largest_lb(0), smallest_rb(-1), largest_rb(-1) {}
+    //
+    //
+    //
     // During file search, a key is compared against smallest and largest
     // from a FileMetaData. It can have 3 possible outcomes:
     // (1) key is smaller than smallest, implying it is also smaller than
     //     larger. Precalculated index based on "smallest < smallest" can
-    //     be used to provide right bound.
+    //     be used to provide right bound. 说明其最小值小于该indexer的最小值的indexer会是有帮助的，来提供右值
     // (2) key is in between smallest and largest.
+    //     说明最小值大于该indexer最大值的indexer 可能用来提供left 边界
     //     Precalculated index based on "smallest > greatest" can be used to
     //     provide left bound.
+    //     说明最大值小于该indexer最小值的indexer 可以用来提供 right 边界
     //     Precalculated index based on "largest < smallest" can be used to
     //     provide right bound.
     // (3) key is larger than largest, implying it is also larger than smallest.
     //     Precalculated index based on "largest > largest" can be used to
     //     provide left bound.
+    //     说明最大值大于该indexer 最大值的的indexer可能用来提供left边界
     //
     // As a result, we will need to do:
+    // 所以，
     // Compare smallest (<=) and largest keys from upper level file with
     // smallest key from lower level to get a right bound.
     // Compare smallest (>=) and largest keys from upper level file with

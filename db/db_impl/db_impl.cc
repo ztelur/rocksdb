@@ -1917,6 +1917,8 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
     }
   }
   if (!done) {
+    // memtable没有查找到之后，RocksDB是如何处理的.
+    // 我们可以看到当MemTable中没有找到对应的数据之后(包括删除)，RocksDB将会进入对应的sst中查找
     PERF_TIMER_GUARD(get_from_output_files_time);
     // 从 sstable 读取
     sv->current->Get(

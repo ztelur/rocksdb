@@ -403,6 +403,7 @@ inline void InlineSkipList<Comparator>::Iterator::Prev() {
 
 template <class Comparator>
 inline void InlineSkipList<Comparator>::Iterator::Seek(const char* target) {
+  // 这是skip list mem table 内部使用的 定位到大于或者等于memtable_key的位置
   node_ = list_->FindGreaterOrEqual(target);
 }
 
@@ -479,8 +480,10 @@ InlineSkipList<Comparator>::FindGreaterOrEqual(const char* key) const {
   Node* x = head_;
   int level = GetMaxHeight() - 1;
   Node* last_bigger = nullptr;
+  // 解码 key
   const DecodedKey key_decoded = compare_.decode_key(key);
   while (true) {
+    // 在当前level，找下一个节点
     Node* next = x->Next(level);
     if (next != nullptr) {
       PREFETCH(next->Next(level), 0, 1);
@@ -489,15 +492,19 @@ InlineSkipList<Comparator>::FindGreaterOrEqual(const char* key) const {
     assert(x == head_ || next == nullptr || KeyIsAfterNode(next->Key(), x));
     // Make sure we haven't overshot during our search
     assert(x == head_ || KeyIsAfterNode(key_decoded, x));
+    // 当 next 是null 或者最后一个节点是，返回1，否则则进行key的对比
     int cmp = (next == nullptr || next == last_bigger)
                   ? 1
                   : compare_(next->Key(), key_decoded);
+    // = 0 表示 相等 或者 cmp > 0 并且 level 已经是 0 了
     if (cmp == 0 || (cmp > 0 && level == 0)) {
       return next;
     } else if (cmp < 0) {
       // Keep searching in this list
+      // 小于，表示当前找到的小于target，所以继续寻找
       x = next;
     } else {
+      // 大于，则进入下一层，并且标记一下 last_bigger，方便后续快速判断
       // Switch to next list, reuse compare_() result
       last_bigger = next;
       level--;
