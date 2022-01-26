@@ -26,14 +26,14 @@ size_t FileIndexer::LevelIndexSize(size_t level) const {
   }
   return next_level_index_[level].num_index;
 }
-
+// 前level的比较结果来计算下一个level需要二分查找的文件范围
 void FileIndexer::GetNextLevelIndex(const size_t level, const size_t file_index,
                                     const int cmp_smallest,
                                     const int cmp_largest, int32_t* left_bound,
                                     int32_t* right_bound) const {
   assert(level > 0);
 
-  // Last level, no hint
+  // Last level, no hint 边界情况
   if (level == num_levels_ - 1) {
     *left_bound = 0;
     *right_bound = -1;
@@ -47,20 +47,25 @@ void FileIndexer::GetNextLevelIndex(const size_t level, const size_t file_index,
   const auto& index = index_units[file_index];
 
   if (cmp_smallest < 0) {
+    // 如果比当前 smallest 还要小
     *left_bound = (level > 0 && file_index > 0)
                       ? index_units[file_index - 1].largest_lb
                       : 0;
+    // 使用上一个index的最大值的最左侧和当前index的最小值的最右侧
     *right_bound = index.smallest_rb;
   } else if (cmp_smallest == 0) {
+    // 等于最小值，那么则使用最小值的最左侧和最小值的最右侧
     *left_bound = index.smallest_lb;
     *right_bound = index.smallest_rb;
   } else if (cmp_smallest > 0 && cmp_largest < 0) {
+    // 大于最小值&&小于最大值，则取 smallest_lb 和 largest_rb 也就是最小值的最左侧和最大值的最右侧
     *left_bound = index.smallest_lb;
     *right_bound = index.largest_rb;
   } else if (cmp_largest == 0) {
     *left_bound = index.largest_lb;
     *right_bound = index.largest_rb;
   } else if (cmp_largest > 0) {
+    // 使用当前 index 的最大值的最左侧，然后下一个index的
     *left_bound = index.largest_lb;
     *right_bound = level_rb_[level + 1];
   } else {

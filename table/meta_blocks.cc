@@ -41,7 +41,7 @@ void MetaIndexBuilder::Add(const std::string& key,
   handle.EncodeTo(&handle_encoding);
   meta_block_handles_.insert({key, handle_encoding});
 }
-
+// 将builer中的数据按照格式添加的meta_inex_block中
 Slice MetaIndexBuilder::Finish() {
   for (const auto& metablock : meta_block_handles_) {
     meta_index_block_->Add(metablock.first, metablock.second);

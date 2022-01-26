@@ -36,6 +36,7 @@ constexpr uint32_t kMagicNumberLengthByte = 8;
 
 // BlockHandle is a pointer to the extent of a file that stores a data
 // block or a meta block.
+// 两个数据结构：offset和size ，分别存放的是对应index的偏移地址和大小
 class BlockHandle {
  public:
   // Creates a block handle with special values indicating "uninitialized,"
@@ -76,6 +77,7 @@ class BlockHandle {
   }
 
  private:
+  // 对应index的偏移地址和大小
   uint64_t offset_;
   uint64_t size_;
 
@@ -192,7 +194,7 @@ class Footer {
  private:
   static constexpr int kInvalidChecksumType =
       (1 << (sizeof(ChecksumType) * 8)) | kNoChecksum;
-
+  // metaindex block 和data index block，且还有一些魔数和版本号的存储
   uint64_t table_magic_number_ = kNullTableMagicNumber;
   uint32_t format_version_ = kInvalidFormatVersion;
   BlockHandle metaindex_handle_;

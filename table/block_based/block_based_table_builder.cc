@@ -1014,6 +1014,8 @@ void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
   }
 }
 
+// 触发写datablock的时机是在compaction最后一个阶段，固化key-value数据到output的文件之中的时候，
+// 会调用函数Status BlockBasedTableBuilder::Finish() 进行table builder结构的创建并按照各个block格式固化到SST文件之中。
 void BlockBasedTableBuilder::Flush() {
   Rep* r = rep_;
   assert(rep_->state != Rep::State::kClosed);
@@ -1049,6 +1051,7 @@ void BlockBasedTableBuilder::WriteBlock(BlockBuilder* block,
   WriteBlock(raw_block_contents, handle, block_type);
 }
 
+// // 最终执行是通过如下函数执行
 void BlockBasedTableBuilder::WriteBlock(const Slice& raw_block_contents,
                                         BlockHandle* handle,
                                         BlockType block_type) {
@@ -1525,7 +1528,7 @@ Status BlockBasedTableBuilder::InsertBlockInCache(const Slice& block_contents,
   }
   return s;
 }
-
+// 将之前收集的key的数据进行整合，按照filter本身应有的格式进行构建，并格式化到metaindex builer之中
 void BlockBasedTableBuilder::WriteFilterBlock(
     MetaIndexBuilder* meta_index_builder) {
   BlockHandle filter_block_handle;
@@ -1536,6 +1539,13 @@ void BlockBasedTableBuilder::WriteFilterBlock(
         rep_->filter_builder->EstimateEntriesAdded();
     Status s = Status::Incomplete();
     while (ok() && s.IsIncomplete()) {
+      // Finish函数 通过filter_builder中的key数据 完成多次filter content的构建，一下步骤是循环进行，直到builder数据为空
+      // 步骤包括:
+      // 1.从之前添加的key/prefix key的entries 取出数据
+      // 2. 针对每一条entries 通过对应filter策略(目前有full和partition两种)的hash函数
+      //     映射出一个能表示该key是否存在的一个值，编码到 filter之中
+      // 3. 清除临时取出来的entries
+      // 4. 将建立好的fitler的偏移量写入到filter handle之中
       // filter_data is used to store the transferred filter data payload from
       // FilterBlockBuilder and deallocate the payload by going out of scope.
       // Otherwise, the payload will unnecessarily remain until
@@ -1564,6 +1574,8 @@ void BlockBasedTableBuilder::WriteFilterBlock(
     }
     rep_->filter_builder->ResetFilterBitsBuilder();
   }
+  //   // 完成之后将 filter的类型以及策略名称组合成一个key，和filter_block_handle一起添加到meta_index_builder之中
+  //  // 用来一起创建索引
   if (ok() && !empty_filter_block) {
     // Add mapping from "<filter_block_prefix>.Name" to location
     // of filter data.
@@ -1737,7 +1749,7 @@ void BlockBasedTableBuilder::WritePropertiesBlock(
     meta_index_builder->Add(*properties_block_meta, properties_block_handle);
   }
 }
-
+//
 void BlockBasedTableBuilder::WriteCompressionDictBlock(
     MetaIndexBuilder* meta_index_builder) {
   if (rep_->compression_dict != nullptr &&
@@ -1792,6 +1804,8 @@ void BlockBasedTableBuilder::WriteFooter(BlockHandle& metaindex_block_handle,
   }
 }
 
+// 在compaction过程中期，sub_compaction线程构建的Iterator，用来对参与compaction的key进行处理。
+// block_based_table_builder.cc EnterUnbuffered函数
 void BlockBasedTableBuilder::EnterUnbuffered() {
   Rep* r = rep_;
   assert(r->state == Rep::State::kBuffered);
@@ -1826,6 +1840,7 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
   std::string compression_dict_samples;
   std::vector<size_t> compression_dict_sample_lens;
   size_t buffer_idx = kInitSampleIdx;
+
   for (size_t i = 0;
        i < kNumBlocksBuffered && compression_dict_samples.size() < kSampleBytes;
        ++i) {
@@ -1843,6 +1858,7 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
 
   // final data block flushed, now we can generate dictionary from the samples.
   // OK if compression_dict_samples is empty, we'll just get empty dictionary.
+  // 大多数情况下，只有当key-value数据写入到了最后一层的时候才会开始进行压缩，且压缩的对象是SST文件最大的而且其中key-value数据最为稳定。
   std::string dict;
   if (r->compression_opts.zstd_max_train_bytes > 0) {
     dict = ZSTD_TrainDictionary(compression_dict_samples,
@@ -1856,7 +1872,7 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
   r->verify_dict.reset(new UncompressionDict(
       dict, r->compression_type == kZSTD ||
                 r->compression_type == kZSTDNotFinalCompression));
-
+  // 借用压缩后的key的信息， 来构造filter entry和index entry
   auto get_iterator_for_block = [&r](size_t i) {
     auto& data_block = r->data_block_buffers[i];
     assert(!data_block.empty());
@@ -1871,7 +1887,7 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
   };
 
   std::unique_ptr<DataBlockIter> iter = nullptr, next_block_iter = nullptr;
-
+  // 针对每一个datablock，构建其filterblock和index block
   for (size_t i = 0; ok() && i < r->data_block_buffers.size(); ++i) {
     if (iter == nullptr) {
       iter = get_iterator_for_block(i);
@@ -1883,7 +1899,7 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
     }
 
     auto& data_block = r->data_block_buffers[i];
-
+    // 开启并行 compression
     if (r->IsParallelCompressionEnabled()) {
       Slice first_key_in_next_block;
       const Slice* first_key_in_next_block_ptr = &first_key_in_next_block;
@@ -1907,13 +1923,18 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
                                                r->get_offset());
       r->pc_rep->EmitBlock(block_rep);
     } else {
+      // filter block的构建过程需要依据datablock中一个个key来进行
       for (; iter->Valid(); iter->Next()) {
         Slice key = iter->key();
         if (r->filter_builder != nullptr) {
+          // 创建 boom filter
+          // 里只是创建存在于内存中的fitler_builder结构，且将key只是作为一个个string类型的entry保存起来
+          //      	// 这个过程并未增加filter的一些算法处理，后续在WriteFilterBlock会使用当前构造好的entry通过一系列hash函数构造bloom filter功能。
           size_t ts_sz =
               r->internal_comparator.user_comparator()->timestamp_size();
           r->filter_builder->Add(ExtractUserKeyAndStripTimestamp(key, ts_sz));
         }
+        // 创建 index
         r->index_builder->OnKeyAdded(key);
       }
       WriteBlock(Slice(data_block), &r->pending_handle, BlockType::kData);
@@ -1941,7 +1962,7 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
     s.PermitUncheckedError();
   }
 }
-
+// 可以看到这里是将对应的metablock 相关信息写入到meta_index_builder之中，最后通过finish函数固化。
 Status BlockBasedTableBuilder::Finish() {
   Rep* r = rep_;
   assert(r->state != Rep::State::kClosed);
@@ -1966,7 +1987,7 @@ Status BlockBasedTableBuilder::Finish() {
           &r->last_key, nullptr /* no next data block */, r->pending_handle);
     }
   }
-
+  // meteindex block其实是一组block，保存了多个metablock的handle ，可以用来访问具体的metablock
   // Write meta blocks, metaindex block and footer in the following order.
   //    1. [meta block: filter]
   //    2. [meta block: index]
@@ -1979,7 +2000,9 @@ Status BlockBasedTableBuilder::Finish() {
   MetaIndexBuilder meta_index_builder;
   WriteFilterBlock(&meta_index_builder);
   WriteIndexBlock(&meta_index_builder, &index_block_handle);
+  // WriteCompressionDictBlock 函数对最终的压缩数据进行整合固化到meta_index_builder之
   WriteCompressionDictBlock(&meta_index_builder);
+  // Range delete block的数据保存的是上层客户端下发的接口DeleteRange中处于当前compaction文件中的keys以及key对应的sequence num。
   WriteRangeDelBlock(&meta_index_builder);
   WritePropertiesBlock(&meta_index_builder);
   if (ok()) {

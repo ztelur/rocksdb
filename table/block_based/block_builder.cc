@@ -115,7 +115,7 @@ size_t BlockBuilder::EstimateSizeAfterKV(const Slice& key,
 
   return estimate;
 }
-
+// // 生成index block的格式，作为参数由以上截图中的函数WriteRawBlock写入磁盘。
 Slice BlockBuilder::Finish() {
   // Append restart array
   for (size_t i = 0; i < restarts_.size(); i++) {

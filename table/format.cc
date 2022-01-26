@@ -263,7 +263,7 @@ void FooterBuilder::Build(uint64_t magic_number, uint32_t format_version,
     std::fill(cur, part3, char{0});
   }
 }
-
+// 解序列化
 Status Footer::DecodeFrom(Slice input, uint64_t input_offset) {
   (void)input_offset;  // Future use
 

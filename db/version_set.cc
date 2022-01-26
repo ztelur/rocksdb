@@ -2032,6 +2032,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
                 storage_info_.num_non_empty_levels_,
                 &storage_info_.file_indexer_, user_comparator(),
                 internal_comparator());
+  // 找到对应的范围数据
   FdWithKeyRange* f = fp.GetNextFile();
 
   while (f != nullptr) {
@@ -2048,6 +2049,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         GetPerfLevel() >= PerfLevel::kEnableTimeExceptForMutex &&
         get_perf_context()->per_level_perf_context_enabled;
     StopWatchNano timer(clock_, timer_enabled /* auto_start */);
+    // 所有对于key的查找都是在table_cache_->Get中
     *status = table_cache_->Get(
         read_options, *internal_comparator(), *f->file_metadata, ikey,
         &get_context, mutable_cf_options_.prefix_extractor.get(),
@@ -2073,6 +2075,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         db_statistics_ != nullptr) {
       get_context.ReportCounters();
     }
+    // 据get_context来判断返回的结果
     switch (get_context.State()) {
       case GetContext::kNotFound:
         // Keep searching in other files
@@ -2091,12 +2094,12 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
 
         PERF_COUNTER_BY_LEVEL_ADD(user_key_return_count, 1,
                                   fp.GetHitFileLevel());
-
+        // 如果是大值
         if (is_blob_index) {
           if (do_merge && value) {
             constexpr FilePrefetchBuffer* prefetch_buffer = nullptr;
             constexpr uint64_t* bytes_read = nullptr;
-
+            // 读取大值
             *status = GetBlob(read_options, user_key, *value, prefetch_buffer,
                               value, bytes_read);
             if (!status->ok()) {
@@ -2123,6 +2126,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
             "ROCKSDB_NAMESPACE::blob_db::BlobDB instead.");
         return;
     }
+    // 没有发现对应的值则进入下一次文件查找
     f = fp.GetNextFile();
   }
   if (db_statistics_ != nullptr) {

@@ -96,7 +96,7 @@ TableReader* TableCache::GetTableReaderFromHandle(Cache::Handle* handle) {
 void TableCache::ReleaseHandle(Cache::Handle* handle) {
   cache_->Release(handle);
 }
-
+// cache 未命中时去真正进行查询
 Status TableCache::GetTableReader(
     const ReadOptions& ro, const FileOptions& file_options,
     const InternalKeyComparator& internal_comparator, const FileDescriptor& fd,
@@ -136,6 +136,8 @@ Status TableCache::GetTableReader(
             record_read_stats ? ioptions_.stats : nullptr, SST_READ_MICROS,
             file_read_hist, ioptions_.rate_limiter.get(), ioptions_.listeners,
             file_temperature));
+    // 调用ioptions_.table_factory->NewTableReader,　
+    // 这里RocksDB会根据我们配置的不同的sst格式来调用不同的reader,而在RocksDB中默认的格式是基于block
     s = ioptions_.table_factory->NewTableReader(
         ro,
         TableReaderOptions(
@@ -156,7 +158,7 @@ void TableCache::EraseHandle(const FileDescriptor& fd, Cache::Handle* handle) {
   Slice key = GetSliceForFileNumber(&number);
   cache_->Erase(key);
 }
-
+// TableCache::FindTable, 这个函数主要是用来实现对应tablereader的读取以及row cache
 Status TableCache::FindTable(
     const ReadOptions& ro, const FileOptions& file_options,
     const InternalKeyComparator& internal_comparator, const FileDescriptor& fd,
@@ -167,33 +169,40 @@ Status TableCache::FindTable(
   PERF_TIMER_GUARD_WITH_CLOCK(find_table_nanos, ioptions_.clock);
   uint64_t number = fd.GetNumber();
   Slice key = GetSliceForFileNumber(&number);
+  // 先 从 reader 缓存中lookup 查看是否存在
   *handle = cache_->Lookup(key);
   TEST_SYNC_POINT_CALLBACK("TableCache::FindTable:0",
                            const_cast<bool*>(&no_io));
-
+  // 如果不存在
   if (*handle == nullptr) {
     if (no_io) {
       return Status::Incomplete("Table not found in table_cache, no_io is set");
     }
     MutexLock load_lock(loader_mutex_.get(key));
     // We check the cache again under loading mutex
+    // 在锁的情况下，再次查询，双层校验，防止突发大流量多线程来查询，击穿缓存
     *handle = cache_->Lookup(key);
+
     if (*handle != nullptr) {
+      // 再次查询到，返回
       return Status::OK();
     }
 
     std::unique_ptr<TableReader> table_reader;
+    // 从 sst table 中获取
     Status s = GetTableReader(
         ro, file_options, internal_comparator, fd, false /* sequential mode */,
         record_read_stats, file_read_hist, &table_reader, prefix_extractor,
         skip_filters, level, prefetch_index_and_filter_in_cache,
         max_file_size_for_l0_meta_pin, file_temperature);
     if (!s.ok()) {
+      // sst file 中也没有
       assert(table_reader == nullptr);
       RecordTick(ioptions_.stats, NO_FILE_ERRORS);
       // We do not cache error results so that if the error is transient,
       // or somebody repairs the file, we recover automatically.
     } else {
+      // 插入到reader缓存中
       s = cache_->Insert(key, table_reader.get(), 1, &DeleteEntry<TableReader>,
                          handle);
       if (s.ok()) {
@@ -323,6 +332,9 @@ Status TableCache::GetRangeTombstoneIterator(
   return s;
 }
 
+/**
+ * 用来生成 table_cache 的 row_cache key fd_number+seq_no+user_key.
+ */
 #ifndef ROCKSDB_LITE
 void TableCache::CreateRowCacheKeyPrefix(const ReadOptions& options,
                                          const FileDescriptor& fd,
@@ -359,11 +371,13 @@ void TableCache::CreateRowCacheKeyPrefix(const ReadOptions& options,
   AppendVarint64(&row_cache_key, seq_no);
 }
 
+// 在row cache中进行一次查找.如果有对应的值则直接返回结果
 bool TableCache::GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
                                  size_t prefix_size, GetContext* get_context) {
   bool found = false;
 
   row_cache_key.TrimAppend(prefix_size, user_key.data(), user_key.size());
+  // 命中
   if (auto row_handle =
           ioptions_.row_cache->Lookup(row_cache_key.GetUserKey())) {
     // Cleanable routine to release the cache entry
@@ -372,6 +386,7 @@ bool TableCache::GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
                                        void* cache_handle) {
       ((Cache*)cache_to_clean)->Release((Cache::Handle*)cache_handle);
     };
+    // 真正去拿数据
     auto found_row_cache_entry =
         static_cast<const std::string*>(ioptions_.row_cache->Value(row_handle));
     // If it comes here value is located on the cache.
@@ -389,12 +404,18 @@ bool TableCache::GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
     RecordTick(ioptions_.stats, ROW_CACHE_HIT);
     found = true;
   } else {
+    // 未命中
     RecordTick(ioptions_.stats, ROW_CACHE_MISS);
   }
   return found;
 }
 #endif  // ROCKSDB_LITE
-
+/**
+ * 这个函数不仅仅是返回对应的查找结果，并且还会cache相应的文件信息，
+ * 并且如果row_cache打开，他还会做row cache.
+ * 这里row cache就是对当前的所需要查找的key在当前sst中对应的value进行cache
+ * @return
+ */
 Status TableCache::Get(const ReadOptions& options,
                        const InternalKeyComparator& internal_comparator,
                        const FileMetaData& file_meta, const Slice& k,
@@ -411,9 +432,12 @@ Status TableCache::Get(const ReadOptions& options,
 
   // Check row cache if enabled. Since row cache does not currently store
   // sequence numbers, we cannot use it if we need to fetch the sequence.
+  // 如果打开了 row_cache，那么
   if (ioptions_.row_cache && !get_context->NeedToReadSequence()) {
     auto user_key = ExtractUserKey(k);
+    // row_cache_key fd_number+seq_no+user_key.
     CreateRowCacheKeyPrefix(options, fd, k, get_context, row_cache_key);
+    // 从 row cache 中读取
     done = GetFromRowCache(user_key, row_cache_key, row_cache_key.Size(),
                            get_context);
     if (!done) {
@@ -422,9 +446,11 @@ Status TableCache::Get(const ReadOptions& options,
   }
 #endif  // ROCKSDB_LITE
   Status s;
+  // 每一个fd都包含了一个TableReader的结构，这个结构就是用来保存文件的内容.而我们的table_cache主要就是缓存这个结构
   TableReader* t = fd.table_reader;
   Cache::Handle* handle = nullptr;
   if (!done) {
+    // 如果未从 row 中获取 需要在对应的sst文件读取对应的key的值
     assert(s.ok());
     if (t == nullptr) {
       s = FindTable(options, file_options_, internal_comparator, fd, &handle,
@@ -450,6 +476,7 @@ Status TableCache::Get(const ReadOptions& options,
       }
     }
     if (s.ok()) {
+      // RocksDB就需要从sst文件中get key了,也就是最终的key查找方式是在每个sst format class的Get方法中实现的。
       get_context->SetReplayLog(row_cache_entry);  // nullptr if no cache.
       s = t->Get(options, k, get_context, prefix_extractor, skip_filters);
       get_context->SetReplayLog(nullptr);

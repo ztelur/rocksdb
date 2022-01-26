@@ -524,6 +524,7 @@ struct BlockBasedTablePropertyNames {
 };
 
 // Create default block based table factory.
+// 这就是默认的 block 类型的 最终缓存的tablereader就是一个BlockBasedTable对象  假设使用了基于block的sst format
 extern TableFactory* NewBlockBasedTableFactory(
     const BlockBasedTableOptions& table_options = BlockBasedTableOptions());
 

@@ -106,6 +106,24 @@ class FileIndexer {
     // Example:
     //    level 1:              [50 - 60]
     //    level 2:        [1 - 40], [45 - 55], [58 - 80]
+    /**
+     * 根据 含义
+     * level 1 的最小值是50，可能存在比 50 还大的 key 的 level 2 的index 是 1，所以 smallest_lb = 1
+     * level 1 的最大值是60，那么存在比 60 还大的的 level 2 的 index 是 2 largest_lb = 2
+     * level 1 的最小值是50，那么存在比 50 还小的 key 的 level 2 的index 是 0 和 1，所以 smallest_rb = 1
+     * level 1 的最大值是60，那么存在比 60 还小的 level2 的index 是 0 1 2,所以 0 largest_rb = 2
+     *
+     * smallest_lb 就是表示存在比最小值大的最左侧的index
+     * smallest_rb 就是表示存在比最最小值小的最右侧的index
+     * largest_lb 就是表示存在比最大值大的最左侧的index
+     * largest_rb 就是表示比最大值小的最右侧的indeex
+     * ??????????? 有点乱
+     * smallest_lb=１;largest_lb=2;smallest_rb=1;largest_rb=2
+     *
+     *
+     *
+     */
+
     // A key 35, compared to be less than 50, 3rd file on level 2 can be
     // skipped according to rule (1). LB = 0, RB = 1.
     // A key 53, sits in the middle 50 and 60. 1st file on level 2 can be
@@ -113,18 +131,24 @@ class FileIndexer {
     // because 60 is greater than 58. LB = 1, RB = 2.
     // A key 70, compared to be larger than 60. 1st and 2nd file can be skipped
     // according to rule (3). LB = 2, RB = 2.
+
+
     //
     // Point to a left most file in a lower level that may contain a key,
     // which compares greater than smallest of a FileMetaData (upper level)
+    // 表示下一层最小的一个 level 文件存在一个 key 能过大于本个 indexer 的最小值的
     int32_t smallest_lb;
     // Point to a left most file in a lower level that may contain a key,
     // which compares greater than largest of a FileMetaData (upper level)
+    // 表示下一层最小的一个 level 文件存在一个 key 能够大于本个 indexer 的最大值
     int32_t largest_lb;
     // Point to a right most file in a lower level that may contain a key,
     // which compares smaller than smallest of a FileMetaData (upper level)
+    // 表示下一个层最大的 level 文件存在一个 key 能够小于本个 indexer 的最小值
     int32_t smallest_rb;
     // Point to a right most file in a lower level that may contain a key,
     // which compares smaller than largest of a FileMetaData (upper level)
+    // 表示下一个层最大的 level 文件存在一个 key 能哦股小于本个 indexer 的最大值
     int32_t largest_rb;
   };
 
