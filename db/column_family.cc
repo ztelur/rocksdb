@@ -1076,8 +1076,11 @@ void ColumnFamilyData::CreateNewMemtable(
   SetMemtable(ConstructNewMemtable(mutable_cf_options, earliest_seq));
   mem_->Ref();
 }
-
+// cf 的判断自己是否需要进行 compaction
 bool ColumnFamilyData::NeedsCompaction() const {
+  // LevelCompactionPicker::NeedsCompaction函数来进行是否满足compaction的条件判断的，以下条件只要满足一个就可以进行compaction的调度
+  // disable_auto_compactions 不开启
+  // 有不同的 compaction_picker 来进行不同策略的选择
   return !mutable_cf_options_.disable_auto_compactions &&
          compaction_picker_->NeedsCompaction(current_->storage_info());
 }
@@ -1085,9 +1088,11 @@ bool ColumnFamilyData::NeedsCompaction() const {
 Compaction* ColumnFamilyData::PickCompaction(
     const MutableCFOptions& mutable_options,
     const MutableDBOptions& mutable_db_options, LogBuffer* log_buffer) {
+  // 计算最早的 sequence
   SequenceNumber earliest_mem_seqno =
       std::min(mem_->GetEarliestSequenceNumber(),
                imm_.current()->GetEarliestSequenceNumber(false));
+  // 不同的Compact策略调用不同的方法
   auto* result = compaction_picker_->PickCompaction(
       GetName(), mutable_options, mutable_db_options, current_->storage_info(),
       log_buffer, earliest_mem_seqno);

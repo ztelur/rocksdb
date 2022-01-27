@@ -238,7 +238,9 @@ void CompactionPicker::GetRange(const std::vector<CompactionInputFiles>& inputs,
   }
   assert(initialized);
 }
-
+// 在选择 compaction file 时进行扩张key的范围，有五个文件他们的key range分别为
+// f1[a1 a2] f2[a3 a4] f3[a4 a6] f4[a6 a7] f5[a8 a9]
+// 如果我们第一次选择了f3,那么我们通过clean cut，则将还会选择f2,f4，因为他们都是连续的.
 bool CompactionPicker::ExpandInputsToCleanCut(const std::string& /*cf_name*/,
                                               VersionStorageInfo* vstorage,
                                               CompactionInputFiles* inputs,
@@ -249,6 +251,7 @@ bool CompactionPicker::ExpandInputsToCleanCut(const std::string& /*cf_name*/,
   const int level = inputs->level;
   // GetOverlappingInputs will always do the right thing for level-0.
   // So we don't need to do any expansion if level == 0.
+  // level 0 不进行任何的 cut clean
   if (level == 0) {
     return true;
   }
@@ -261,9 +264,12 @@ bool CompactionPicker::ExpandInputsToCleanCut(const std::string& /*cf_name*/,
   int hint_index = -1;
   size_t old_size;
   do {
+    // 旧的大小
     old_size = inputs->size();
+    // 获取旧范围的最大只和最小值
     GetRange(*inputs, &smallest, &largest);
     inputs->clear();
+    // 再次获取一次
     vstorage->GetOverlappingInputs(level, &smallest, &largest, &inputs->files,
                                    hint_index, &hint_index, true,
                                    next_smallest);
@@ -280,7 +286,7 @@ bool CompactionPicker::ExpandInputsToCleanCut(const std::string& /*cf_name*/,
   }
   return true;
 }
-
+// 判断是否正在compact的out_level的文件范围是否和我们选择好的文件的key有重合
 bool CompactionPicker::RangeOverlapWithCompaction(
     const Slice& smallest_user_key, const Slice& largest_user_key,
     int level) const {
@@ -296,7 +302,7 @@ bool CompactionPicker::RangeOverlapWithCompaction(
   // Did not overlap with any running compaction in level `level`
   return false;
 }
-
+// 判断是否正在compact的out_level的文件范围是否和我们选择好的文件的key有重合
 bool CompactionPicker::FilesRangeOverlapWithCompaction(
     const std::vector<CompactionInputFiles>& inputs, int level) const {
   bool is_empty = true;
@@ -1145,6 +1151,7 @@ void CompactionPicker::PickFilesMarkedForCompaction(
   start_level_inputs->files.clear();
 }
 
+// 从level-0中得到所有的重合key的文件，然后加入到start_level_inputs中.
 bool CompactionPicker::GetOverlappingL0Files(
     VersionStorageInfo* vstorage, CompactionInputFiles* start_level_inputs,
     int output_level, int* parent_index) {

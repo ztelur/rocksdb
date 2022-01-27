@@ -2350,6 +2350,8 @@ void DBImpl::EnableManualCompaction() {
   manual_compaction_paused_.fetch_sub(1, std::memory_order_release);
 }
 
+// 自动进行 compaction
+// 在切换wal（SwitchWAL）或者write_buffer(memtable)满的时候被调用
 void DBImpl::MaybeScheduleFlushOrCompaction() {
   mutex_.AssertHeld();
   if (!opened_successfully_) {
@@ -2372,6 +2374,8 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
   auto bg_job_limits = GetBGJobLimits();
   bool is_flush_pool_empty =
       env_->GetBackgroundThreads(Env::Priority::HIGH) == 0;
+
+  // Flush 相关的操作
   while (!is_flush_pool_empty && unscheduled_flushes_ > 0 &&
          bg_flush_scheduled_ < bg_job_limits.max_flushes) {
     bg_flush_scheduled_++;
@@ -2420,6 +2424,8 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     return;
   }
 
+  // // RocksDB中后台运行的compact会有一个限制(max_compactions). bg_compaction_scheduled_ 不能大于 max_flushes
+  //  // 而我们可以看到这里还有一个变量 unscheduled_compactions_，这个变量表示需要被compact的columnfamily的队列长度
   while (bg_compaction_scheduled_ + bg_bottom_compaction_scheduled_ <
              bg_job_limits.max_compactions &&
          unscheduled_compactions_ > 0) {
@@ -2427,8 +2433,9 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     ca->db = this;
     ca->compaction_pri_ = Env::Priority::LOW;
     ca->prepicked_compaction = nullptr;
-    bg_compaction_scheduled_++;
-    unscheduled_compactions_--;
+    bg_compaction_scheduled_++; // // /正在被调度的compaction线程数目
+    unscheduled_compactions_--; // 调度的线程个数，及待调度的cfd的长度
+    //     // 调度BGWorkCompaction线程
     env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::LOW, this,
                    &DBImpl::UnscheduleCompactionCallback);
   }
@@ -2506,6 +2513,7 @@ ColumnFamilyData* DBImpl::PickCompactionFromQueue(
   assert(*token == nullptr);
   autovector<ColumnFamilyData*> throttled_candidates;
   ColumnFamilyData* cfd = nullptr;
+  // 当 compaction_queue_ 不为 empty 时
   while (!compaction_queue_.empty()) {
     auto first_cfd = *compaction_queue_.begin();
     compaction_queue_.pop_front();
@@ -2519,6 +2527,7 @@ ColumnFamilyData* DBImpl::PickCompactionFromQueue(
     break;
   }
   // Add throttled compaction candidates back to queue in the original order.
+  // 重新加回去
   for (auto iter = throttled_candidates.rbegin();
        iter != throttled_candidates.rend(); ++iter) {
     compaction_queue_.push_front(*iter);
@@ -2567,8 +2576,11 @@ void DBImpl::SchedulePendingFlush(const FlushRequest& flush_req,
   }
 }
 
+// 函数SchedulePendingCompaction更新的，且unscheduled_compactions_变量是和该函数一起更新的，
+// 也就是只有设置了该变量才能够正常调度compaction后台线程。
 void DBImpl::SchedulePendingCompaction(ColumnFamilyData* cfd) {
   mutex_.AssertHeld();
+  // 判断是否需要进行 compaction
   if (!cfd->queued_for_compaction() && cfd->NeedsCompaction()) {
     AddToCompactionQueue(cfd);
     ++unscheduled_compactions_;
@@ -2823,6 +2835,7 @@ void DBImpl::BackgroundCallFlush(Env::Priority thread_pri) {
   }
 }
 
+// Compact的所有操作都在DBImpl::BackgroundCompaction中进行
 void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
                                       Env::Priority bg_thread_pri) {
   bool made_progress = false;
@@ -2831,12 +2844,14 @@ void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
   LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL,
                        immutable_db_options_.info_log.get());
   {
+    // 加锁
     InstrumentedMutexLock l(&mutex_);
 
     // This call will unlock/lock the mutex to wait for current running
     // IngestExternalFile() calls to finish.
+    // 等待完成
     WaitForIngestFile();
-
+    // 计数累加
     num_running_compactions_++;
 
     std::unique_ptr<std::list<uint64_t>::iterator>
@@ -2951,6 +2966,7 @@ void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
   }
 }
 
+// Compact的所有操作都在DBImpl::BackgroundCompaction中进行
 Status DBImpl::BackgroundCompaction(bool* made_progress,
                                     JobContext* job_context,
                                     LogBuffer* log_buffer,
@@ -2963,6 +2979,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
   *made_progress = false;
   mutex_.AssertHeld();
   TEST_SYNC_POINT("DBImpl::BackgroundCompaction:Start");
+  // 判断是否为手动触发
 
   bool is_manual = (manual_compaction != nullptr);
   std::unique_ptr<Compaction> c;
@@ -3069,7 +3086,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
 
       return Status::OK();
     }
-
+    //  首先是从compaction_queue_队列中读取第一个需要compact的column family.
     auto cfd = PickCompactionFromQueue(&task_token, log_buffer);
     if (cfd == nullptr) {
       // Can't find any executable task from the compaction queue.
@@ -3095,11 +3112,13 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     // throughout the compaction procedure to make sure consistency. It will
     // eventually be installed into SuperVersion
     auto* mutable_cf_options = cfd->GetLatestMutableCFOptions();
+    // 如果没有禁止 auto compaction 并且该 cf 没有被丢弃
     if (!mutable_cf_options->disable_auto_compactions && !cfd->IsDropped()) {
       // NOTE: try to avoid unnecessary copy of MutableCFOptions if
       // compaction is not necessary. Need to make sure mutex is held
       // until we make a copy in the following code
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction():BeforePickCompaction");
+      // PickCompaction选取当前CF中所需要compact的内容， 会根据不同的Compact策略调用不同的方法
       c.reset(cfd->PickCompaction(*mutable_cf_options, mutable_db_options_,
                                   log_buffer));
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction():AfterPickCompaction");

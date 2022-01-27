@@ -622,8 +622,9 @@ class VersionStorageInfo {
   // are initialized by Finalize().
   // The most critical level to be compacted is listed first
   // These are used to pick the best compaction level
-  std::vector<double> compaction_score_;
-  std::vector<int> compaction_level_;
+  // 这两个变量分别保存了level以及每个level所对应的score(这里score越高表示compact优先级越高)，而score小于１则表示不需要compact.
+  std::vector<double> compaction_score_; // //当前sst的score
+  std::vector<int> compaction_level_; // //当前sst需要被compact到的层level
   int l0_delay_trigger_count_ = 0;  // Count used to trigger slow down and stop
                                     // for number of L0 files.
 

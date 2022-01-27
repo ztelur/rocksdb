@@ -2159,6 +2159,7 @@ class DBImpl : public DB {
   std::deque<FlushRequest> flush_queue_;
   // invariant(column family present in compaction_queue_ <==>
   // ColumnFamilyData::pending_compaction_ == true)
+  // 在函数SchedulePendingCompaction更新的，且unscheduled_compactions_变量是和该函数一起更新的，也就是只有设置了该变量才能够正常调度compaction后台线程
   std::deque<ColumnFamilyData*> compaction_queue_;
 
   // A map to store file numbers and filenames of the files to be purged
