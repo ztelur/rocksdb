@@ -284,11 +284,12 @@ bool LevelCompactionBuilder::SetupOtherL0FilesIfNeeded() {
   }
   return true;
 }
-
+//
 bool LevelCompactionBuilder::SetupOtherInputsIfNeeded() {
   // Setup input files from output level. For output to L0, we only compact
   // spans of files that do not interact with any pending compactions, so don't
   // need to consider other levels.
+  // 从 output level 再次设置 input files。
   if (output_level_ != 0) {
     output_level_inputs_.level = output_level_;
     if (!compaction_picker_->SetupOtherInputs(
@@ -350,6 +351,7 @@ Compaction* LevelCompactionBuilder::PickCompaction() {
   }
 
   // Form a compaction object containing the files we picked.
+  // 最终构造一个包含所有file的实例
   Compaction* c = GetCompaction();
 
   TEST_SYNC_POINT_CALLBACK("LevelCompactionPicker::PickCompaction:Return", c);

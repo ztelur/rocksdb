@@ -3319,6 +3319,9 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     GetSnapshotContext(job_context, &snapshot_seqs,
                        &earliest_write_conflict_snapshot, &snapshot_checker);
     assert(is_snapshot_supported_ || snapshots_.empty());
+    // CompactionJob,每一次的compact都是一个job,最终对于文件的compact都是在 CompactionJob::run中实现
+    // 在RocksDB中，Compact是会多线程并发的执行，而这里怎样并发，并发多少线程都是在CompactionJob中实现的，
+    // 简单来说，当你的compact的文件range不重合的话，那么都是可以并发执行的。
     CompactionJob compaction_job(
         job_context->job_id, c.get(), immutable_db_options_,
         mutable_db_options_, file_options_for_compaction_, versions_.get(),
@@ -3335,6 +3338,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
         is_manual ? manual_compaction->canceled : nullptr, db_id_,
         db_session_id_, c->column_family_data()->GetFullHistoryTsLow(),
         &blob_callback_);
+    // 执行前的准备工作
     compaction_job.Prepare();
 
     NotifyOnCompactionBegin(c->column_family_data(), c.get(), status,
@@ -3343,6 +3347,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     TEST_SYNC_POINT_CALLBACK(
         "DBImpl::BackgroundCompaction:NonTrivial:BeforeRun", nullptr);
     // Should handle erorr?
+    // 在这个函数中，就是会遍历所有的sub_compact,然后启动线程来进行对应的compact工作，最后等到所有的线程完成，然后退出.
     compaction_job.Run().PermitUncheckedError();
     TEST_SYNC_POINT("DBImpl::BackgroundCompaction:NonTrivial:AfterRun");
     mutex_.Lock();

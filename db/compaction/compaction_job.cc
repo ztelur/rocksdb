@@ -521,7 +521,7 @@ void CompactionJob::ReportStartedCompaction(Compaction* compaction) {
       compaction->is_manual_compaction();
   compaction_job_stats_->is_full_compaction = compaction->is_full_compaction();
 }
-
+// 取得对应的compact的边界，这里每一个需要并发的compact都被抽象为一个sub compaction
 void CompactionJob::Prepare() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_PREPARE);
@@ -535,7 +535,8 @@ void CompactionJob::Prepare() {
   write_hint_ =
       c->column_family_data()->CalculateSSTWriteHint(c->output_level());
   bottommost_level_ = c->bottommost_level();
-
+  // GenSubcompactionBoundaries 会解析到对应的sub compaction以及边界.
+  // 解析完毕之后，则将会把对应的信息全部加入sub_compact_states
   if (c->ShouldFormSubcompactions()) {
     {
       StopWatch sw(db_options_.clock, stats_, SUBCOMPACTION_SETUP_TIME);
@@ -568,7 +569,7 @@ struct RangeWithSize {
   RangeWithSize(const Slice& a, const Slice& b, uint64_t s = 0)
       : range(a, b), size(s) {}
 };
-
+// 首先是遍历所有的需要compact的level,然后取得每一个level的边界(也就是最大最小key)加入到bounds数组之中。
 void CompactionJob::GenSubcompactionBoundaries() {
   auto* c = compact_->compaction;
   auto* cfd = c->column_family_data();
@@ -579,16 +580,20 @@ void CompactionJob::GenSubcompactionBoundaries() {
 
   // Add the starting and/or ending key of certain input files as a potential
   // boundary
+  // 遍历所有 level
   for (size_t lvl_idx = 0; lvl_idx < c->num_input_levels(); lvl_idx++) {
+
     int lvl = c->level(lvl_idx);
+
     if (lvl >= start_lvl && lvl <= out_lvl) {
+      // 拿到对应的 level 的数据
       const LevelFilesBrief* flevel = c->input_levels(lvl_idx);
       size_t num_files = flevel->num_files;
 
       if (num_files == 0) {
         continue;
       }
-
+      // 对于 level 0，就加每个文件的 starting 和 ending
       if (lvl == 0) {
         // For level 0 add the starting and ending key of each file since the
         // files may have greatly differing key ranges (not range-partitioned)
@@ -597,6 +602,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
           bounds.emplace_back(flevel->files[i].largest_key);
         }
       } else {
+        // 对于非 level 0，则添加在本 level 的 最大和最小值
         // For all other levels add the smallest/largest key in the level to
         // encompass the range covered by that level
         bounds.emplace_back(flevel->files[0].smallest_key);
@@ -613,7 +619,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
       }
     }
   }
-
+  // 对获取到的bounds进行排序去重
   std::sort(bounds.begin(), bounds.end(),
             [cfd_comparator](const Slice& a, const Slice& b) -> bool {
               return cfd_comparator->Compare(ExtractUserKey(a),
@@ -659,6 +665,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
   }
 
   // Group the ranges into subcompactions
+  // 计算理想情况下所需要的subcompactions的个数以及输出文件的个数
   const double min_file_fill_percent = 4.0 / 5;
   int base_level = v->storage_info()->base_level();
   uint64_t max_output_files = static_cast<uint64_t>(std::ceil(
@@ -671,7 +678,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
       std::min({static_cast<uint64_t>(ranges.size()),
                 static_cast<uint64_t>(c->max_subcompactions()),
                 max_output_files});
-
+  // 更新boundaries_，这里会根据根据文件的大小，通过平均的size,来吧所有的range分为几份，最终这些都会保存在boundaries_
   if (subcompactions > 1) {
     double mean = sum * 1.0 / subcompactions;
     // Greedily add ranges to the subcompaction until the sum of the ranges'
@@ -697,7 +704,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
     sizes_.emplace_back(sum);
   }
 }
-
+// 在这个函数中，就是会遍历所有的sub_compact,然后启动线程来进行对应的compact工作，最后等到所有的线程完成，然后退出.
 Status CompactionJob::Run() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_RUN);
@@ -719,6 +726,7 @@ Status CompactionJob::Run() {
 
   // Always schedule the first subcompaction (whether or not there are also
   // others) in the current thread to be efficient with resources
+  // ProcessKeyValueCompaction 拿到的sub_compact_states进行真正的compaction处理实际key-value的数据。
   ProcessKeyValueCompaction(&compact_->sub_compact_states[0]);
 
   // Wait for all other threads (if there are any) to finish execution
@@ -1211,6 +1219,21 @@ CompactionJob::ProcessKeyValueCompactionWithCompactionService(
 }
 #endif  // !ROCKSDB_LITE
 
+// ProcessKeyValueCompaction 拿到的sub_compact_states进行真正的compaction处理实际key-value的数据。
+/**
+ * 主要做如下几件事情
+
+将 当前subcompaction 的k-v的数据取出，维护一个迭代器来进行访问（此时会构造一个堆排序的存储结构，来通过迭代器访问堆顶元素）
+
+·这里指客户端对指定的key下发的merge操作，包括list append, add …之类的操作)
+
+合并的过程主要是 取到当前internal key的最新的snapshot对应的操作（主要针对put/delete，保留range_deletion）
+
+将合并好的数据返回，交给迭代器一个一个 进行访问，并进行后续的write操作（每访问一个，pop堆顶，并重建堆，再取堆顶元素）
+
+创建输出的文件，并绑定builder 和 writer，方便后续的数据写入
+ * @param sub_compact
+ */
 void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   assert(sub_compact);
   assert(sub_compact->compaction);
