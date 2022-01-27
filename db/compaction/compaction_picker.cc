@@ -1164,6 +1164,7 @@ bool CompactionPicker::GetOverlappingL0Files(
   // c->inputs_[0] earlier and replace it with an overlapping set
   // which will include the picked file.
   start_level_inputs->files.clear();
+  // 从 level 0 处获取所有重叠的 key
   vstorage->GetOverlappingInputs(0, &smallest, &largest,
                                  &(start_level_inputs->files));
 

@@ -344,6 +344,7 @@ Compaction* LevelCompactionBuilder::PickCompaction() {
   // Pick files in the output level and expand more files in the start level
   // if needed.
   // 选择对应的输出文件
+  // 假设start_level_inputs被扩展了，那么对应的output也需要被扩展，因为非level0的其他的level的文件key都是不会overlap的. 那么此时就是会调用 SetupOtherInputsIfNeeded .
   if (!SetupOtherInputsIfNeeded()) {
     return nullptr;
   }
