@@ -215,6 +215,7 @@ struct CompactionJob::SubcompactionState {
     if (!s.ok()) {
       return s;
     }
+    // 调用builder->Add函数构造对应的builder结构
     builder->Add(key, value);
     return Status::OK();
   }
@@ -1295,6 +1296,10 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 
   // Although the v2 aggregator is what the level iterator(s) know about,
   // the AddTombstones calls will be propagated down to the v1 aggregator.
+  // 充的sub_compact数据取出对应的key-value数据，构造一个InternalIterator。
+  // 构造最小堆的过程无非就是让插入的元素字典序中越小，越向上，如果没法上升则就放在原地，具体过程代码已经很明确了。
+  //
+  // 到此我们已经完成了整个key-value迭代器的构建，且获取到之后迭代器内部的元素是一个最大堆的形态。
   std::unique_ptr<InternalIterator> raw_input(
       versions_->MakeInputIterator(read_options, sub_compact->compaction,
                                    &range_del_agg, file_options_for_read_));
@@ -1330,7 +1335,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
         new BlobCountingIterator(input, sub_compact->blob_garbage_meter.get()));
     input = blob_counter.get();
   }
-
+  // 内部指针放在整个迭代器最开始的部位?
   input->SeekToFirst();
 
   AutoThreadOperationStageUpdater stage_updater(
@@ -1389,6 +1394,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   Status status;
   const std::string* const full_history_ts_low =
       full_history_ts_low_.empty() ? nullptr : &full_history_ts_low_;
+
+  // 构造一个包含所有状态的CompactionIterator，直接初始化就可以，构造完成需要将 CompactionIterator 的内部指针放在整个迭代器最开始的部位
   sub_compact->c_iter.reset(new CompactionIterator(
       input, cfd->user_comparator(), &merge, versions_->LastSequence(),
       &existing_snapshots_, earliest_write_conflict_snapshot_,
@@ -1398,8 +1405,10 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       sub_compact->compaction, compaction_filter, shutting_down_,
       preserve_deletes_seqnum_, manual_compaction_paused_,
       manual_compaction_canceled_, db_options_.info_log, full_history_ts_low));
+  // 内部指针放在整个迭代器最开始的部位
   auto c_iter = sub_compact->c_iter.get();
   c_iter->SeekToFirst();
+
   if (c_iter->Valid() && sub_compact->compaction->output_level() != 0) {
     sub_compact->FillFilesToCutForTtl();
     // ShouldStopBefore() maintains state based on keys processed so far. The
@@ -1415,10 +1424,32 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
           ? nullptr
           : sub_compact->compaction->CreateSstPartitioner();
   std::string last_key_for_partitioner;
+  // 通过Next指针来获取下一个key-value，同时还需要需要在每次迭代器元素内部移动的时候除了调整底层堆中的字典序结构之外，
+  // 还兼顾处理各个不同type的key数据，将kValueType，kTypeDeletion，kTypeSingleDeletion，
+  // kValueDeleteRange,kTypeMerge 等不同的key type处理完成。这一部分内容有非常多的逻辑，本篇还是先专注于compaction的主体逻辑。
+
+
+  /**
+   * 确认key 的valueType类型，如果是data_block或者index_block类型，则放入builder状态机中
+
+优先创建filter_buiilder和index_builder，index builer创建成 分层格式(两层index leve, 第一层多个restart点，用来索引具体的datablock；第二层索引第一层的index block)，方便加载到内存进行二分查找，节约内存消耗，加速查找；其次再写data_block_builder
+
+如果key的 valueType类型是 range_deletion，则加入到range_delete_block_builder之中
+
+先将data_block builder 利用绑定的输出的文件的writer写入底层文件
+
+将filter_block / index_builder / compress_builder/range_del_builder/properties_builder 按照对应的格式加入到 meta_data_builder之中，利用绑定ouput 文件的 writer写入底层存储
+
+利用meta_data_handle 和 index_handle 封装footer,写入底层存储
+   *
+   *
+   *
+   */
 
   while (status.ok() && !cfd->IsDropped() && c_iter->Valid()) {
     // Invariant: c_iter.status() is guaranteed to be OK if c_iter->Valid()
     // returns true.
+    // 拿到 key 和 value
     const Slice& key = c_iter->key();
     const Slice& value = c_iter->value();
 
@@ -1433,12 +1464,14 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     }
 
     // Open output file if necessary
+    // 打开输出的文件 将builder与output文件的writer进行绑定，创建好table builder
     if (sub_compact->builder == nullptr) {
       status = OpenCompactionOutputFile(sub_compact);
       if (!status.ok()) {
         break;
       }
     }
+    // 调用builder->Add函数构造对应的builder结构
     status = sub_compact->AddToBuilder(key, value);
     if (!status.ok()) {
       break;
@@ -1465,6 +1498,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     // going to be 1.2MB and max_output_file_size = 1MB, prefer to have 0.6MB
     // and 0.6MB instead of 1MB and 0.2MB)
     bool output_file_ended = false;
+    // 通过 FinishCompactionOutputFile 之前添加的builder数据 进行整合，处理一些delete range 的block以及更新当前compaction的边界。
+    // 当之前累计的builder中block数据的大小达到可以写入的sst文件本身的大小 max_output_file_size ，会触发当前函数 FinishCompactionOutputFile
     if (sub_compact->compaction->output_level() != 0 &&
         sub_compact->current_output_file_size >=
             sub_compact->compaction->max_output_file_size()) {
@@ -1480,6 +1515,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       last_key_for_partitioner.assign(c_iter->user_key().data_,
                                       c_iter->user_key().size_);
     }
+    // 处理下一个
     c_iter->Next();
     if (c_iter->status().IsManualCompactionPaused()) {
       break;
@@ -1499,12 +1535,14 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
         output_file_ended = true;
       }
     }
+    // output_file_ended output_file 超出预设的最大值
     if (output_file_ended) {
       const Slice* next_key = nullptr;
       if (c_iter->Valid()) {
         next_key = &c_iter->key();
       }
       CompactionIterationStats range_del_out_stats;
+      // 触发 FinishCompactionOutputFile
       status = FinishCompactionOutputFile(input->status(), sub_compact,
                                           &range_del_agg, &range_del_out_stats,
                                           next_key);
@@ -1672,7 +1710,7 @@ void CompactionJob::RecordDroppedKeys(
                c_iter_stats.num_optimized_del_drop_obsolete);
   }
 }
-
+// 最后写入到 compaction output file 中
 Status CompactionJob::FinishCompactionOutputFile(
     const Status& input_status, SubcompactionState* sub_compact,
     CompactionRangeDelAggregator* range_del_agg,
@@ -1860,6 +1898,7 @@ Status CompactionJob::FinishCompactionOutputFile(
     }
   }
   const uint64_t current_entries = sub_compact->builder->NumEntries();
+  // 进行真正的写入
   if (s.ok()) {
     s = sub_compact->builder->Finish();
   } else {

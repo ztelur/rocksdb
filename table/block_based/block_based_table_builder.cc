@@ -310,8 +310,19 @@ struct BlockBasedTableBuilder::Rep {
   //   called, so the table builder is no longer usable. We must be in this
   //   state by the time the destructor runs.
   enum class State {
+    /**
+     * 状态机的初始状态。处于这个状态的时候，内存有较多缓存的未压缩的datablock。在该状态的过程中，
+     * 通过 EnterUnbuffered 函数构造compression block，依此构建对应的index block和filterblock。
+     * 最终将状态置为下一个状态的：kUnbuffered
+     */
     kBuffered,
+    /**
+     * compressing block已经通过之前的buffer中的data初步构造完成，且接下来将在这个状态通过 Finish 完成各个block的写入 或者通过 Abandon 丢弃当前的写入
+     */
     kUnbuffered,
+    /**
+     * 已经完成了table builder的finish或者abandon，那么接下来将析构当前的table builder
+     */
     kClosed,
   };
   State state;
@@ -457,6 +468,13 @@ struct BlockBasedTableBuilder::Rep {
     for (uint32_t i = 0; i < compression_opts.parallel_threads; i++) {
       compression_ctxs[i].reset(new CompressionContext(compression_type));
     }
+    // index builer的类型根据blockbased的option来创建：
+    //
+    //如果指定了kTwoLevelIndexSearch，则初始化为PartitionedIndexBuilder,它的index 结构是前n-1层是用来存储索引datablock的数据，最后一层是存储索引前n-1层index block的数据。
+    //
+    //如果是默认的kBinarySearch，则就是支持二分查找的，则就是ShortenedIndexBuilder
+    //
+    //还有其他的三种不同的index type
     if (table_options.index_type ==
         BlockBasedTableOptions::kTwoLevelIndexSearch) {
       p_index_builder_ = PartitionedIndexBuilder::CreateIndexBuilder(
@@ -904,25 +922,30 @@ BlockBasedTableBuilder::~BlockBasedTableBuilder() {
   assert(rep_->state == Rep::State::kClosed);
   delete rep_;
 }
-
+// 在 compaction是是会进行调用，是 block_based_table 的实现
 void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
   Rep* r = rep_;
   assert(rep_->state != Rep::State::kClosed);
   if (!ok()) return;
   ValueType value_type = ExtractValueType(key);
+  // 判断是不是值类型
   if (IsValueType(value_type)) {
 #ifndef NDEBUG
     if (r->props.num_entries > r->props.num_range_deletions) {
       assert(r->internal_comparator.Compare(key, Slice(r->last_key)) > 0);
     }
 #endif  // !NDEBUG
-
+    // 不同的flush 策略
     auto should_flush = r->flush_block_policy->Update(key, value);
     if (should_flush) {
+      // 如果data block能够满足flush的条件，则直接flush datablock的数据到当前bulider对应的datablock存储结构中。
       assert(!r->data_block.empty());
+      // 需要刷入一个 block
       r->first_key_in_next_block = &key;
+      // 刷新
       Flush();
       if (r->state == Rep::State::kBuffered) {
+        // 如果当前是kBuffered 这个状态
         bool exceeds_buffer_limit =
             (r->buffer_limit != 0 && r->data_begin_offset > r->buffer_limit);
         bool exceeds_global_block_cache_limit = false;
@@ -940,6 +963,7 @@ void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
         }
 
         if (exceeds_buffer_limit || exceeds_global_block_cache_limit) {
+          // 进入EnterUnbuffered函数
           EnterUnbuffered();
         }
       }
@@ -1806,6 +1830,13 @@ void BlockBasedTableBuilder::WriteFooter(BlockHandle& metaindex_block_handle,
 
 // 在compaction过程中期，sub_compaction线程构建的Iterator，用来对参与compaction的key进行处理。
 // block_based_table_builder.cc EnterUnbuffered函数
+/**
+ * EnterUnbuffered 函数主要逻辑是构造compression block，如果我们开启了compression的选项则会构造。
+
+同时依据之前flush添加到datablock中的数据来构造index block和filter block，用来索引datablock的数据。
+ 选择在这里构造的话主要还是因为flush的时候表示一个完整的datablock已经写入完成，
+ 这里需要通过一个完整的datablock数据才有必要构造一条indexblock的数据。
+ */
 void BlockBasedTableBuilder::EnterUnbuffered() {
   Rep* r = rep_;
   assert(r->state == Rep::State::kBuffered);
@@ -1968,9 +1999,9 @@ Status BlockBasedTableBuilder::Finish() {
   assert(r->state != Rep::State::kClosed);
   bool empty_data_block = r->data_block.empty();
   r->first_key_in_next_block = nullptr;
-  Flush();
+  Flush(); // //再次执行 先尝试将key-value的数据刷到datablock
   if (r->state == Rep::State::kBuffered) {
-    EnterUnbuffered();
+    EnterUnbuffered(); //  // 依据datablock数据构建index ,filter和compression block数据
   }
   if (r->IsParallelCompressionEnabled()) {
     StopParallelCompression();
@@ -1998,22 +2029,22 @@ Status BlockBasedTableBuilder::Finish() {
   //    7. Footer
   BlockHandle metaindex_block_handle, index_block_handle;
   MetaIndexBuilder meta_index_builder;
-  WriteFilterBlock(&meta_index_builder);
-  WriteIndexBlock(&meta_index_builder, &index_block_handle);
+  WriteFilterBlock(&meta_index_builder); // //filter_builder数据添加到 meta_index_builder
+  WriteIndexBlock(&meta_index_builder, &index_block_handle); // //添加index_builder
   // WriteCompressionDictBlock 函数对最终的压缩数据进行整合固化到meta_index_builder之
   WriteCompressionDictBlock(&meta_index_builder);
   // Range delete block的数据保存的是上层客户端下发的接口DeleteRange中处于当前compaction文件中的keys以及key对应的sequence num。
-  WriteRangeDelBlock(&meta_index_builder);
-  WritePropertiesBlock(&meta_index_builder);
+  WriteRangeDelBlock(&meta_index_builder); // 添加range tombstone
+  WritePropertiesBlock(&meta_index_builder); // 添加最终的属性数据
   if (ok()) {
     // flush the meta index block
     WriteRawBlock(meta_index_builder.Finish(), kNoCompression,
                   &metaindex_block_handle, BlockType::kMetaIndex);
   }
   if (ok()) {
-    WriteFooter(metaindex_block_handle, index_block_handle);
+    WriteFooter(metaindex_block_handle, index_block_handle); // //写Footer数据
   }
-  r->state = Rep::State::kClosed;
+  r->state = Rep::State::kClosed; // //最终返回table_builder的close状态，析构当前的table builer
   r->SetStatus(r->CopyIOStatus());
   Status ret_status = r->CopyStatus();
   assert(!ret_status.ok() || io_status().ok());

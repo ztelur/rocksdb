@@ -46,8 +46,10 @@ class MergingIterator : public InternalIterator {
         current_(nullptr),
         minHeap_(comparator_),
         pinned_iters_mgr_(nullptr) {
+    // 扩容
     children_.resize(n);
     for (int i = 0; i < n; i++) {
+      // 传入的list也就是函数中的children中的所有元素添加到一个vector中
       children_[i].Set(children[i]);
     }
   }
@@ -413,10 +415,13 @@ InternalIterator* NewMergingIterator(const InternalKeyComparator* cmp,
                                      Arena* arena, bool prefix_seek_mode) {
   assert(n >= 0);
   if (n == 0) {
+    // list 是空，直接返回空
     return NewEmptyInternalIterator<Slice>(arena);
   } else if (n == 1) {
+    // 只有一个，那么认为这个迭代器本身就是有序的，不需要构建一个堆排序的迭代器（level-0 的sst内部是有序的，之前创建的时候是为level-0每一个sst创建一个list元素；非level-0的整层都是有序的）
     return list[0];
   } else {
+    // 如果多个，那么直接通过MergingIterator来创建堆排序的迭代器
     if (arena == nullptr) {
       return new MergingIterator(cmp, list, n, false, prefix_seek_mode);
     } else {

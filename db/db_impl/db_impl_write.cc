@@ -2179,6 +2179,7 @@ Status DB::SingleDelete(const WriteOptions& opt,
   return s;
 }
 
+// 默认 delete range 处理
 Status DB::DeleteRange(const WriteOptions& opt,
                        ColumnFamilyHandle* column_family,
                        const Slice& begin_key, const Slice& end_key) {
