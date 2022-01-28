@@ -1681,6 +1681,7 @@ int DBImpl::Level0StopWriteTrigger(ColumnFamilyHandle* column_family) {
       ->mutable_cf_options.level0_stop_writes_trigger;
 }
 
+// column family flush的时候，通过DBImpl::Flush 调用对应cf的memtable flush函数，在flush memtable的过程中进行新的wal的创建
 Status DBImpl::Flush(const FlushOptions& flush_options,
                      ColumnFamilyHandle* column_family) {
   auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
@@ -1691,6 +1692,7 @@ Status DBImpl::Flush(const FlushOptions& flush_options,
     s = AtomicFlushMemTables({cfh->cfd()}, flush_options,
                              FlushReason::kManualFlush);
   } else {
+    // 主要就是flush memtable
     s = FlushMemTable(cfh->cfd(), flush_options, FlushReason::kManualFlush);
   }
 
@@ -1931,13 +1933,15 @@ void DBImpl::GenerateFlushRequest(const autovector<ColumnFamilyData*>& cfds,
     req->emplace_back(cfd, max_memtable_id);
   }
 }
-
+// 将 memtable 刷新到 sst file 中
+// 需要将内存中memtable 标记为imutable-memetable，来进行后台的写入sst文件；同时会生成新的memtable，这个时候wal记录的是旧的memtable的请求，
 Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
                              const FlushOptions& flush_options,
                              FlushReason flush_reason, bool writes_stopped) {
   // This method should not be called if atomic_flush is true.
   assert(!immutable_db_options_.atomic_flush);
   Status s;
+  // 判断是否需要等待 write 后再进行 flush
   if (!flush_options.allow_write_stall) {
     bool flush_needed = true;
     s = WaitUntilFlushWouldNotStallWrites(cfd, &flush_needed);
@@ -1972,6 +1976,7 @@ Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
       // retry resume, it is possible that in some CFs,
       // cfd->imm()->NumNotFlushed() = 0. In this case, so no flush request will
       // be created and scheduled, status::OK() will be returned.
+      // 进行 mem table 切换
       s = SwitchMemtable(cfd, &context);
     }
     const uint64_t flush_memtable_id = port::kMaxUint64;

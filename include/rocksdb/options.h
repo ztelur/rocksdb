@@ -319,7 +319,7 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
 
   void Dump(Logger* log) const;
 };
-
+// rocksdb 支持可以调整的4种 wal recovery模式
 enum class WALRecoveryMode : char {
   // Original levelDB recovery
   //
@@ -340,22 +340,28 @@ enum class WALRecoveryMode : char {
   // detected during recovery, this mode will refuse to open the DB. Whereas,
   // `kPointInTimeRecovery` will stop recovery just before the corruption since
   // that is a valid point-in-time to which to recover.
+  // 这个级别是允许丢失一部分数据，会忽略一些在wal末尾写入失败的请求，
+  // 数据异常仅限于log文件末尾写入失败。如果出现了其他的异常，都无法进行数据重放。
+
   kTolerateCorruptedTailRecords = 0x00,
   // Recover from clean shutdown
   // We don't expect to find any corruption in the WAL
   // Use case : This is ideal for unit tests and rare applications that
   // can require high consistency guarantee
+  // 这种级别是对一致性要求最高的级别，不允许有任何的IO错误，不能出现一个record的丢失。
   kAbsoluteConsistency = 0x01,
   // Recover to point-in-time consistency (default)
   // We stop the WAL playback on discovering WAL inconsistency
   // Use case : Ideal for systems that have disk controller cache like
   // hard disk, SSD without super capacitor that store related data
+  // 这个级别也是现在rocksdb默认的recovery mode，当遇到IO error的时候会停止重放，将出现异常之前的所有数据进行完成重放。
   kPointInTimeRecovery = 0x02,
   // Recovery after a disaster
   // We ignore any corruption in the WAL and try to salvage as much data as
   // possible
   // Use case : Ideal for last ditch effort to recover data or systems that
   // operate with low grade unrelated data
+  // 这个级别是一致性要求最低的，会忽略所有的IO error，尝试尽可能多得恢复数据。
   kSkipAnyCorruptedRecords = 0x03,
 };
 

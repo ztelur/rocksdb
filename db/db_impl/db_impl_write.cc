@@ -1891,6 +1891,8 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
       GetWalPreallocateBlockSize(mutable_cf_options.write_buffer_size);
   mutex_.Unlock();
   // 需要创建新的 wal 日志
+  // wal记录的是旧的memtable的请求，为了数据的隔离性，
+  // 且wal不会过大，每个wal文件只和一个memtable绑定，所以切换memtable的过程中会创建新的wal文件，用来接收新的请求
   if (creating_new_log) {
     // TODO: Write buffer size passed in should be max of all CF's instead
     // of mutable_cf_options.write_buffer_size.

@@ -1692,7 +1692,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   s = impl->Recover(column_families, false, false, false, &recovered_seq);
   if (s.ok()) {
     // 创建新的WAL
-    // 拿到一个新的 log number
+    // 拿到一个新的 log number NewFileNumber 会在manifest中记录的next_file_number_ 基础上加一
     uint64_t new_log_number = impl->versions_->NewFileNumber();
     log::Writer* new_log = nullptr;
     // 预先分配文件大小，和rockmq比赛的一样 创建新的WAL
