@@ -3151,7 +3151,7 @@ const Snapshot* DBImpl::GetSnapshotForWriteConflictBoundary() {
   return GetSnapshotImpl(true);
 }
 #endif  // ROCKSDB_LITE
-
+// 创建 snapshot，其中 is_write_conflict_boundary 是为了事务机制中的 snapshot 进行冲突检查
 SnapshotImpl* DBImpl::GetSnapshotImpl(bool is_write_conflict_boundary,
                                       bool lock) {
   int64_t unix_time = 0;

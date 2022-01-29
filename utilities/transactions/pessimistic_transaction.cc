@@ -553,22 +553,37 @@ Status PessimisticTransaction::LockBatch(WriteBatch* batch,
 // If check_shapshot is true and this transaction has a snapshot set,
 // this key will only be locked if there have been no writes to this key since
 // the snapshot time.
+// PessimisticTransaction::TryLock
+//	PessimisticTransactionDB::TryLock
+//		PointLockManager::TryLock
+// 悲观事务模式下的尝试给更新的键值进行加锁
 Status PessimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
                                        const Slice& key, bool read_only,
                                        bool exclusive, const bool do_validate,
                                        const bool assume_tracked) {
   assert(!assume_tracked || !do_validate);
   Status s;
+  // 用户配置了 TransactionOptions::skip_concurrency_control=true 的话，这里后面的key 独占以及冲突检测都会直接跳过
+   // 需要应用自己保证 不会有key冲突
+  //需要应用保证recovery 的时候所有的回滚和commit 操作 都会新的事务启动之前就完成。
   if (UNLIKELY(skip_concurrency_control_)) {
     return s;
   }
+  // 拿到 cf id 和 key 的 string
   uint32_t cfh_id = GetColumnFamilyID(column_family);
   std::string key_str = key.ToString();
 
   PointLockStatus status;
-  bool lock_upgrade;
-  bool previously_locked;
+  bool lock_upgrade; // 是否锁升级
+  bool previously_locked; // 之前是不是已经lock了
+  // Tracks the lock requests.
+// In PessimisticTransaction, it tracks the locks acquired through LockMgr;
+// In OptimisticTransaction, since there is no LockMgr, it tracks the lock
+// intention. Not thread-safe.
+  // logck tracker 区分悲观和乐观两种情况
+  // 判断是否支持只锁一个单独 key
   if (tracked_locks_->IsPointLockSupported()) {
+    // 检查是否已经被锁了
     status = tracked_locks_->GetPointLockStatus(cfh_id, key_str);
     previously_locked = status.locked;
     lock_upgrade = previously_locked && exclusive && !status.exclusive;
@@ -582,9 +597,10 @@ Status PessimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
   // Lock this key if this transactions hasn't already locked it or we require
   // an upgrade.
   if (!previously_locked || lock_upgrade) {
+    // 加锁 ！
     s = txn_db_impl_->TryLock(this, cfh_id, key_str, exclusive);
   }
-
+  // 处理 SetSnapshotOnNextOperation 设置的snapshot_need_ 变量
   SetSnapshotIfNeeded();
 
   // Even though we do not care about doing conflict checking for this write,
@@ -595,16 +611,20 @@ Status PessimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
   // future
   SequenceNumber tracked_at_seq =
       status.locked ? status.seq : kMaxSequenceNumber;
+  // 如果不需要进行校验，或者 snapshot_ == null
   if (!do_validate || snapshot_ == nullptr) {
     if (assume_tracked && !previously_locked &&
         tracked_locks_->IsPointLockSupported()) {
       s = Status::InvalidArgument(
           "assume_tracked is set but it is not tracked yet");
     }
+    // 记录一下目前最新的 sequence number
     // Need to remember the earliest sequence number that we know that this
     // key has not been modified after.  This is useful if this same
     // transaction
     // later tries to lock this key again.
+    // tracked_at_seq 在之前为 lock 的场景下，被赋值为 kMaxSequenceNumber
+    // 所以这里先获取一下
     if (tracked_at_seq == kMaxSequenceNumber) {
       // Since we haven't checked a snapshot, we only know this key has not
       // been modified since after we locked it.
@@ -620,6 +640,7 @@ Status PessimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
     // since the snapshot.  This must be done after we locked the key.
     // If we already have validated an earilier snapshot it must has been
     // reflected in tracked_at_seq and ValidateSnapshot will return OK.
+    // 需要确定 snapshot 之后，没有被修改过
     if (s.ok()) {
       s = ValidateSnapshot(column_family, key, &tracked_at_seq);
 
@@ -651,6 +672,7 @@ Status PessimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
     // setting, and at a lower sequence number, so skipping here should be
     // safe.
     if (!assume_tracked) {
+      // 进行记录，方便下次 try  lock 时复用
       TrackKey(cfh_id, key_str, tracked_at_seq, read_only, exclusive);
     } else {
 #ifndef NDEBUG
@@ -688,6 +710,16 @@ Status PessimisticTransaction::GetRangeLock(ColumnFamilyHandle* column_family,
 // transaction snapshot_.
 // tracked_at_seq is the global seq at which we either locked the key or already
 // have done ValidateSnapshot.
+// 检查 snapshot 后是否 key 被修改
+// 从version 系统中 取一个local_version ，直接暴力遍历这个version 中的 mem/imm,imm-list/sst ，拿到当前冲突key 一个最新的seq即可。
+// PessimisticTransaction::ValidateSnapshot
+//	TransactionUtil::CheckKeyForConflicts
+//		TransactionUtil::CheckKey
+//			DBImpl::GetLatestSequenceForKey
+//				sv->mem->Get
+//				sv->imm->Get
+//				sv->imm->GetFromHistory
+//				sv->current->Get
 Status PessimisticTransaction::ValidateSnapshot(
     ColumnFamilyHandle* column_family, const Slice& key,
     SequenceNumber* tracked_at_seq) {

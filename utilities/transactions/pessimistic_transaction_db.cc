@@ -375,6 +375,7 @@ Status PessimisticTransactionDB::TryLock(PessimisticTransaction* txn,
                                          uint32_t cfh_id,
                                          const std::string& key,
                                          bool exclusive) {
+  // 调用 manager 进行加锁，分为 PointLockManager 和 RangeLockManager
   return lock_manager_->TryLock(txn, cfh_id, key, GetEnv(), exclusive);
 }
 

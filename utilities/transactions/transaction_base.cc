@@ -72,8 +72,9 @@ void TransactionBaseImpl::Reinitialize(DB* db,
   indexing_enabled_ = true;
   cmp_ = GetColumnFamilyUserComparator(db_->DefaultColumnFamily());
 }
-
+// 设置snapshot
 void TransactionBaseImpl::SetSnapshot() {
+  // 先获取一个 snapshot
   const Snapshot* snapshot = dbimpl_->GetSnapshotForWriteConflictBoundary();
   SetSnapshotInternal(snapshot);
 }
@@ -86,7 +87,7 @@ void TransactionBaseImpl::SetSnapshotInternal(const Snapshot* snapshot) {
   snapshot_needed_ = false;
   snapshot_notifier_ = nullptr;
 }
-
+// 下一次操作时，需要，会在 tryLock 的实现中调用  SetSnapshotIfNeeded
 void TransactionBaseImpl::SetSnapshotOnNextOperation(
     std::shared_ptr<TransactionNotifier> notifier) {
   snapshot_needed_ = true;
@@ -94,6 +95,7 @@ void TransactionBaseImpl::SetSnapshotOnNextOperation(
 }
 
 void TransactionBaseImpl::SetSnapshotIfNeeded() {
+  // 如果需要设置 snapshot
   if (snapshot_needed_) {
     std::shared_ptr<TransactionNotifier> notifier = snapshot_notifier_;
     SetSnapshot();
@@ -324,6 +326,8 @@ Status TransactionBaseImpl::Put(ColumnFamilyHandle* column_family,
                                 const Slice& key, const Slice& value,
                                 const bool assume_tracked) {
   const bool do_validate = !assume_tracked;
+  // 会首先进行 try lock
+  // 会进行悲观和乐观的处理
   Status s = TryLock(column_family, key, false /* read_only */,
                      true /* exclusive */, do_validate, assume_tracked);
 

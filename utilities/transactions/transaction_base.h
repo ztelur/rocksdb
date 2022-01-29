@@ -124,6 +124,7 @@ class TransactionBaseImpl : public Transaction {
 
   Status Put(ColumnFamilyHandle* column_family, const Slice& key,
              const Slice& value, const bool assume_tracked = false) override;
+  // txn 的 put 操作的入口
   Status Put(const Slice& key, const Slice& value) override {
     return Put(nullptr, key, value);
   }
@@ -355,6 +356,7 @@ class TransactionBaseImpl : public Transaction {
 
   // SetSnapshotOnNextOperation() has been called and the snapshot has not yet
   // been reset.
+  // 设置下一个操作需要进行 set snapshot 操作
   bool snapshot_needed_ = false;
 
   // SetSnapshotOnNextOperation() has been called and the caller would like
