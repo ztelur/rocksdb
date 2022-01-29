@@ -47,7 +47,7 @@ IOStatus Writer::Close() {
   }
   return s;
 }
-
+// 将 wal entry 写入到文件中
 IOStatus Writer::AddRecord(const Slice& slice) {
   const char* ptr = slice.data();
   size_t left = slice.size();
@@ -62,13 +62,16 @@ IOStatus Writer::AddRecord(const Slice& slice) {
   IOStatus s;
   bool begin = true;
   do {
+    // 计算 block 剩下的大小
     const int64_t leftover = kBlockSize - block_offset_;
     assert(leftover >= 0);
+    // 如果不够，
     if (leftover < header_size) {
       // Switch to a new block
       if (leftover > 0) {
         // Fill the trailer (literal below relies on kHeaderSize and
         // kRecyclableHeaderSize being <= 11)
+        // 写入填充的字段
         assert(header_size <= 11);
         s = dest_->Append(Slice("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
                                 static_cast<size_t>(leftover)));
@@ -87,6 +90,7 @@ IOStatus Writer::AddRecord(const Slice& slice) {
 
     RecordType type;
     const bool end = (left == fragment_length);
+    // 计算类型，是full，还是first，还是last，还是 midle
     if (begin && end) {
       type = recycle_log_files_ ? kRecyclableFullType : kFullType;
     } else if (begin) {
@@ -96,7 +100,7 @@ IOStatus Writer::AddRecord(const Slice& slice) {
     } else {
       type = recycle_log_files_ ? kRecyclableMiddleType : kMiddleType;
     }
-
+    // 进行写入
     s = EmitPhysicalRecord(type, ptr, fragment_length);
     ptr += fragment_length;
     left -= fragment_length;

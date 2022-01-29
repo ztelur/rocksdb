@@ -51,8 +51,10 @@ Reader::~Reader() {
 //
 // TODO krad: Evaluate if we need to move to a more strict mode where we
 // restrict the inconsistency to only the last log
+// 从 wal 中读取日志数据
 bool Reader::ReadRecord(Slice* record, std::string* scratch,
                         WALRecoveryMode wal_recovery_mode) {
+  // 先清空
   scratch->clear();
   record->clear();
   bool in_fragmented_record = false;
@@ -61,10 +63,14 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch,
   uint64_t prospective_record_offset = 0;
 
   Slice fragment;
+  // 一直读取
   while (true) {
+    // 计算剩余
     uint64_t physical_record_offset = end_of_buffer_offset_ - buffer_.size();
     size_t drop_size = 0;
+    // 会从物理的record中读取数据,将读取过程中发生的异常返回给record_type
     const unsigned int record_type = ReadPhysicalRecord(&fragment, &drop_size);
+    //
     switch (record_type) {
       case kFullType:
       case kRecyclableFullType:
@@ -117,7 +123,9 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch,
           return true;
         }
         break;
-
+      // 接下来通过不同的recovery mode来针对异常的record_type 进行处理，决定是否需要返回数据异常
+      //	//当出现 header,eof(log末尾)，kOldRecord（和eof异常类似）异常时都会 确认recovery mode是否是 kAbsoluteConsistency
+      //	//是的话直接report异常
       case kBadHeader:
         if (wal_recovery_mode == WALRecoveryMode::kAbsoluteConsistency ||
             wal_recovery_mode == WALRecoveryMode::kPointInTimeRecovery) {
@@ -149,6 +157,7 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch,
         return false;
 
       case kOldRecord:
+        // 如果是跳过所有异常的话，不会report corruption
         if (wal_recovery_mode != WALRecoveryMode::kSkipAnyCorruptedRecords) {
           // Treat a record from a previous instance of the log as EOF.
           if (in_fragmented_record) {
@@ -333,25 +342,30 @@ bool Reader::ReadMore(size_t* drop_size, int *error) {
     //  middle of writing the header. Unless explicitly requested we don't
     //  considering this an error, just report EOF.
     if (buffer_.size()) {
+      // 如果还有剩余数据，则返回 kBadheader
       *drop_size = buffer_.size();
       buffer_.clear();
       *error = kBadHeader;
       return false;
     }
+    // 否则返回 kEof
     buffer_.clear();
     *error = kEof;
     return false;
   }
 }
-
+// 从物理文件中读取 record
 unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size) {
   while (true) {
     // We need at least the minimum header size
+    // 如果当前大小小于 header 的size
     if (buffer_.size() < static_cast<size_t>(kHeaderSize)) {
       // the default value of r is meaningless because ReadMore will overwrite
       // it if it returns false; in case it returns true, the return value will
       // not be used anyway
+      // 返回 kEof 错误
       int r = kEof;
+      // 判断是否需要继续读取
       if (!ReadMore(drop_size, &r)) {
         return r;
       }
@@ -360,11 +374,14 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size) {
 
     // Parse the header
     const char* header = buffer_.data();
+
     const uint32_t a = static_cast<uint32_t>(header[4]) & 0xff;
     const uint32_t b = static_cast<uint32_t>(header[5]) & 0xff;
+    // 获取 header type
     const unsigned int type = header[6];
     const uint32_t length = a | (b << 8);
     int header_size = kHeaderSize;
+    // 特殊类型
     if (type >= kRecyclableFullType && type <= kRecyclableLastType) {
       if (end_of_buffer_offset_ - buffer_.size() == 0) {
         recycled_ = true;

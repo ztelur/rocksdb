@@ -35,7 +35,7 @@ IOStatus WritableFileWriter::Create(const std::shared_ptr<FileSystem>& fs,
   }
   return io_s;
 }
-
+// 底层的写入文件
 IOStatus WritableFileWriter::Append(const Slice& data,
                                     uint32_t crc32c_checksum) {
   const char* src = data.data();

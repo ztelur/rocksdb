@@ -1137,10 +1137,12 @@ WriteBatch* DBImpl::MergeBatch(const WriteThread::WriteGroup& write_group,
 
 // When two_write_queues_ is disabled, this function is called from the only
 // write thread. Otherwise this must be called holding log_write_mutex_.
+// 真正进行写入
 IOStatus DBImpl::WriteToWAL(const WriteBatch& merged_batch,
                             log::Writer* log_writer, uint64_t* log_used,
                             uint64_t* log_size) {
   assert(log_size != nullptr);
+  // 序列化处理
   Slice log_entry = WriteBatchInternal::Contents(&merged_batch);
   *log_size = log_entry.size();
   // When two_write_queues_ WriteToWAL has to be protected from concurretn calls
@@ -1154,6 +1156,7 @@ IOStatus DBImpl::WriteToWAL(const WriteBatch& merged_batch,
   if (UNLIKELY(needs_locking)) {
     log_write_mutex_.Lock();
   }
+  // 通过 log_writer 进行写入
   IOStatus io_s = log_writer->AddRecord(log_entry);
 
   if (UNLIKELY(needs_locking)) {
@@ -1179,8 +1182,14 @@ IOStatus DBImpl::WriteToWAL(const WriteThread::WriteGroup& write_group,
   // Same holds for all in the batch group
   size_t write_with_wal = 0;
   WriteBatch* to_be_cached_state = nullptr;
+  /**
+   * 因为实际写入的过程中可能多个客户端会并发调用put,每一个Put都会有自己的writer，为了提高写性能，
+   * 会从多个writer选出来一个leader，让这个leader将所有 writer要写的wal收集到一块，
+   * 进行batch写入，其他从writer等待leader写完之后再并发写memtable。
+   */
   WriteBatch* merged_batch = MergeBatch(write_group, &tmp_batch_,
                                         &write_with_wal, &to_be_cached_state);
+
   if (merged_batch == write_group.leader->batch) {
     write_group.leader->log_used = logfile_number_;
   } else if (write_with_wal > 1) {
@@ -1192,6 +1201,7 @@ IOStatus DBImpl::WriteToWAL(const WriteThread::WriteGroup& write_group,
   WriteBatchInternal::SetSequence(merged_batch, sequence);
 
   uint64_t log_size;
+  // 调用 WriteToWAL
   io_s = WriteToWAL(*merged_batch, log_writer, log_used, &log_size);
   if (to_be_cached_state) {
     cached_recoverable_state_ = *to_be_cached_state;

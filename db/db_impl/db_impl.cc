@@ -734,7 +734,12 @@ DBImpl::~DBImpl() {
   }
 }
 
+/**
+ * 根据 paranoid_checks 来判断是否容忍这个错误
+ * @param s
+ */
 void DBImpl::MaybeIgnoreError(Status* s) const {
+  // paranoid_checks
   if (s->ok() || immutable_db_options_.paranoid_checks) {
     // No change needed
   } else {

@@ -804,6 +804,7 @@ Status DBImpl::InitPersistStatsColumnFamily() {
 }
 
 // REQUIRES: wal_numbers are sorted in ascending order
+// Open db调用Recover的时候 启动时从log文件中进行恢复
 Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
                                SequenceNumber* next_sequence, bool read_only,
                                bool* corrupted_wal_found) {
@@ -863,8 +864,11 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
   bool stop_replay_for_corruption = false;
   bool flushed = false;
   uint64_t corrupted_wal_number = kMaxSequenceNumber;
+  // 从 version 信息中获取最小的 wal number
   uint64_t min_wal_number = MinLogNumberToKeep();
+  // 依次处理对应的 WAL
   for (auto wal_number : wal_numbers) {
+    // 根据最小 wal number 进行 skip
     if (wal_number < min_wal_number) {
       ROCKS_LOG_INFO(immutable_db_options_.info_log,
                      "Skipping log #%" PRIu64
@@ -875,8 +879,10 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
     // The previous incarnation may not have written any MANIFEST
     // records after allocating this log number.  So we manually
     // update the file number allocation counter in VersionSet.
+    // 记录一下这个number 已经被使用了
     versions_->MarkFileNumberUsed(wal_number);
     // Open the log file
+    // 构造 wal file name
     std::string fname =
         LogFileName(immutable_db_options_.GetWalDir(), wal_number);
 
@@ -891,11 +897,12 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
                        static_cast<int>(bytes));
       }
     };
+    // 如果被停止了，那么
     if (stop_replay_by_wal_filter) {
       logFileDropped();
       continue;
     }
-
+    // 创建一个file reader
     std::unique_ptr<SequentialFileReader> file_reader;
     {
       std::unique_ptr<FSSequentialFile> file;
@@ -912,12 +919,13 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
           continue;
         }
       }
+      // 重制 file reader
       file_reader.reset(new SequentialFileReader(
           std::move(file), fname, immutable_db_options_.log_readahead_size,
           io_tracer_));
     }
 
-    // Create the log reader.
+    // Create the log reader. 创建一个 LogReporter
     LogReporter reporter;
     reporter.env = env_;
     reporter.info_log = immutable_db_options_.info_log.get();
@@ -933,6 +941,7 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
     // paranoid_checks==false so that corruptions cause entire commits
     // to be skipped instead of propagating bad information (like overly
     // large sequence numbers).
+    // 基于 file_reader 构造一个 log Reader
     log::Reader reader(immutable_db_options_.info_log, std::move(file_reader),
                        &reporter, true /*checksum*/, wal_number);
 
@@ -944,20 +953,23 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
 
     TEST_SYNC_POINT_CALLBACK("DBImpl::RecoverLogFiles:BeforeReadWal",
                              /*arg=*/nullptr);
+    // 持续通过 log reader 进行读取，需要将 wal_recovery_mode 传入
     while (!stop_replay_by_wal_filter &&
            reader.ReadRecord(&record, &scratch,
                              immutable_db_options_.wal_recovery_mode) &&
            status.ok()) {
+      // 检查读取的 record 大小
       if (record.size() < WriteBatchInternal::kHeader) {
         reporter.Corruption(record.size(),
                             Status::Corruption("log record too small"));
         continue;
       }
-
+      // 解析，将其加入到 batch 中
       status = WriteBatchInternal::SetContents(&batch, record);
       if (!status.ok()) {
         return status;
       }
+      // 生成对应的 sequence number
       SequenceNumber sequence = WriteBatchInternal::Sequence(&batch);
 
       if (immutable_db_options_.wal_recovery_mode ==
@@ -974,7 +986,7 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
           break;
         }
       }
-
+      // 进行 wal filter 的相关处理，专门在 recovery 是进行处理
 #ifndef ROCKSDB_LITE
       if (immutable_db_options_.wal_filter != nullptr) {
         WriteBatch new_batch;
@@ -1059,12 +1071,15 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
       // we just ignore the update.
       // That's why we set ignore missing column families to true
       bool has_valid_writes = false;
+      // 真正进行写入
       status = WriteBatchInternal::InsertInto(
           &batch, column_family_memtables_.get(), &flush_scheduler_,
           &trim_history_scheduler_, true, wal_number, this,
           false /* concurrent_memtable_writes */, next_sequence,
           &has_valid_writes, seq_per_batch_, batch_per_txn_);
+      // 如果有错误，根据 paranoid_checks 来看一下是否容忍
       MaybeIgnoreError(&status);
+      // 如果不对，进行记录
       if (!status.ok()) {
         // We are treating this as a failure while reading since we read valid
         // blocks that do not form coherent data
@@ -1085,6 +1100,7 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
           auto iter = version_edits.find(cfd->GetID());
           assert(iter != version_edits.end());
           VersionEdit* edit = &iter->second;
+          // 写入到 mem table
           status = WriteLevel0TableForRecovery(job_id, cfd, cfd->mem(), edit);
           if (!status.ok()) {
             // Reflect errors immediately so that conditions like full
@@ -1092,13 +1108,13 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
             return status;
           }
           flushed = true;
-
+          // 创建新的 memtable
           cfd->CreateNewMemtable(*cfd->GetLatestMutableCFOptions(),
                                  *next_sequence);
         }
       }
     }
-
+    // 如果失败，则根据 recovery mode 进行恢复
     if (!status.ok()) {
       if (status.IsNotSupported()) {
         // We should not treat NotSupported as corruption. It is rather a clear
@@ -1106,6 +1122,7 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
         // version of the code.
         return status;
       }
+      // 如果mode是 kSkipAnyCorruptedRecords ，则跳过所有的异常，直接返回OK
       if (immutable_db_options_.wal_recovery_mode ==
           WALRecoveryMode::kSkipAnyCorruptedRecords) {
         // We should ignore all errors unconditionally
@@ -1160,6 +1177,10 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
   // Exclude the PIT case where no log is dropped after the corruption point.
   // This is to cover the case for empty wals after corrupted log, in which we
   // don't reset stop_replay_for_corruption.
+  /**
+   * // 主要是对kPointInTimeRecovery 和 kTolerateCorruptedTailRecords进行恢复处理
+  // 将corrupted_log_number 之前所有数据完成恢复，再报告异常
+   */
   if (stop_replay_for_corruption == true &&
       (immutable_db_options_.wal_recovery_mode ==
            WALRecoveryMode::kPointInTimeRecovery ||

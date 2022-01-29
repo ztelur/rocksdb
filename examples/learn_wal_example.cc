@@ -44,7 +44,9 @@ int main () {
   assert(s.ok());
   delete db;
 
-  s = rocksdb::DB::Open(options, kDBPath, column_families, &handles, &db);
+  s = rocksdb::DB::Open(options, kDBPath, &db);
+
+
 
   cout << handles.size() << " open status is : " << s.ToString()  << endl;
   db->Put(rocksdb::WriteOptions(), handles[1], rocksdb::Slice("key1"), rocksdb::Slice("value1"));
