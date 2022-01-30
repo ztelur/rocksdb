@@ -5,11 +5,15 @@
 
 #ifndef ROCKSDB_LITE
 
+#include <iostream>
+
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/utilities/transaction.h"
 #include "rocksdb/utilities/transaction_db.h"
+#include "rocksdb/iostats_context.h"
+#include "rocksdb/perf_context.h"
 
 using namespace ROCKSDB_NAMESPACE;
 
@@ -33,6 +37,13 @@ int main() {
   ReadOptions read_options;
   TransactionOptions txn_options;
   std::string value;
+
+
+  rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
+  rocksdb::get_perf_context()->Reset();
+  rocksdb::get_iostats_context()->Reset();
+
+
 
   ////////////////////////////////////////////////////////
   //
@@ -180,6 +191,18 @@ int main() {
   s = txn_db->Get(read_options, "y", &value);
   assert(s.ok());
   assert(value == "y1");
+
+
+  rocksdb::SetPerfLevel(rocksdb::PerfLevel::kDisable); // 关闭profling
+
+  //获取具体的profling结果
+  std::cout << rocksdb::get_perf_context()->ToString() << std::endl; //获取所有的perf 状态
+  std::cout << rocksdb::get_iostats_context()->ToString() << std::endl; //获取所有的iostats状态
+  std::cout << "get_from_memtable_time: "
+            << rocksdb::get_perf_context()->get_from_memtable_time
+            << "write_nanos: "
+            << rocksdb::get_iostats_context()->write_nanos
+            << std::endl; // 获取某一个具体状态的数值
 
   // Cleanup
   delete txn_db;

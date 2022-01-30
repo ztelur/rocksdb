@@ -11,6 +11,10 @@
 
 #include "rocksdb/perf_level.h"
 
+/**
+ * 内部各个子流程的耗时统计，比如写wal的耗时/请求计数，写memtable的耗时/请求计数
+ */
+
 namespace ROCKSDB_NAMESPACE {
 
 // A thread local context for gathering performance counter efficiently
@@ -62,10 +66,17 @@ struct PerfContext {
 
   // free the space for PerfContextByLevel, also disable per level perf context
   void ClearPerLevelPerfContext();
-
+  /**
+   * 统计二分查找的次数，如果次数过多，可能是我们配置的comparator不是很合理。当然这个也与系统中数据量的大小，是否是冷热数据有关
+   */
   uint64_t user_key_comparison_count;  // total number of user key comparisons
+  // block cache或者 page cache的效率
+  // 从block cache中读取数据的次数
   uint64_t block_cache_hit_count;      // total number of block cache hits
+  // 从page cache中读取数据的次数，通过和上一个指标的对比来评估block cache的miss rate，
+  // 从而确定当前配置下的block cache性能。（实现上，block cache是在page cache之上的一层缓存，默认是LRU）
   uint64_t block_read_count;           // total number of block reads (with IO)
+
   uint64_t block_read_byte;            // total number of bytes from block reads
   uint64_t block_read_time;            // total nanos spent on block reads
   uint64_t block_cache_index_hit_count;   // total number of index block hits
@@ -119,12 +130,15 @@ struct PerfContext {
   uint64_t internal_merge_count;
 
   uint64_t get_snapshot_time;        // total nanos spent on getting snapshot
+  // memtable中读取数据的耗时
   uint64_t get_from_memtable_time;   // total nanos spent on querying memtables
   uint64_t get_from_memtable_count;  // number of mem tables queried
   // total nanos spent after Get() finds a key
   uint64_t get_post_process_time;
+  // sst文件中读取数据的耗时
   uint64_t get_from_output_files_time;  // total nanos reading from output files
   // total nanos spent on seeking memtable
+  // 查找memtable的耗时
   uint64_t seek_on_memtable_time;
   // number of seeks issued on memtable
   // (including SeekForPrev but not SeekToFirst and SeekToLast)
@@ -149,8 +163,10 @@ struct PerfContext {
   // are enabled.
   //
   // total nanos spent on writing to WAL
+  // 写wal的耗时
   uint64_t write_wal_time;
   // total nanos spent on writing to mem tables
+  // 写memtable的耗时
   uint64_t write_memtable_time;
   // total nanos spent on delaying or throttling write
   uint64_t write_delay_time;
@@ -158,6 +174,12 @@ struct PerfContext {
   // flushes/compactions.
   uint64_t write_scheduling_flushes_compactions_time;
   // total nanos spent on writing a record, excluding the above four things
+  /**
+   * 主要是写入数据之前的一些准备耗时，不包括wal以及memtale的写入耗时
+比如在组提交过程中，非leader的写入需要等待leader完成wal的写入之后才
+   能开始写memtble，这一些耗时也会被计算在内
+如下代码，在开始写memtale的时候才会停止计时，如果writer是非leader，则writer的状态并不是能够写memtable的，不会进入到这个逻辑，那么非leader就会等待一段时间。
+   */
   uint64_t write_pre_and_post_process_time;
 
   // time spent waiting for other threads of the batch group

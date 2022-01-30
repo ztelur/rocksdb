@@ -1668,7 +1668,7 @@ static void CleanupIteratorState(void* arg1, void* /*arg2*/) {
   delete state;
 }
 }  // namespace
-
+// 会创建一大堆 interator
 InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
                                               ColumnFamilyData* cfd,
                                               SuperVersion* super_version,
@@ -1676,17 +1676,27 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
                                               RangeDelAggregator* range_del_agg,
                                               SequenceNumber sequence,
                                               bool allow_unprepared_value) {
+
+
+
   InternalIterator* internal_iter;
   assert(arena != nullptr);
   assert(range_del_agg != nullptr);
   // Need to create internal iterator from the arena.
+  // MergingIterator 是通过NewIternalIterator 创建的，创建的过程中主要是维护一个MergeIteratorBuilder
   MergeIteratorBuilder merge_iter_builder(
       &cfd->internal_comparator(), arena,
       !read_options.total_order_seek &&
           super_version->mutable_cf_options.prefix_extractor != nullptr);
   // Collect iterator for mutable mem
+  /**
+   * MergeIteratorBuilder，并依次创建后续的 memtable, rangetombstone,immutable memtable, LevelIterator, TwoLevelIterator等一系列迭代器。
+   */
+   // 加上 mem_iterator active memtable 是接受写请求，允许插入key-value数据的一个结构
   merge_iter_builder.AddIterator(
       super_version->mem->NewIterator(read_options, arena));
+
+  // rangeTombstone memtbale 是存储rangetombstone数据的memtable，当上层用户通过DeleteRange接口下发一个范围删除的请求，会将tombstone信息放在这个memtable之中。
   std::unique_ptr<FragmentedRangeTombstoneIterator> range_del_iter;
   Status s;
   if (!read_options.ignore_range_deletions) {
@@ -1694,9 +1704,11 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
         super_version->mem->NewRangeTombstoneIterator(read_options, sequence));
     range_del_agg->AddTombstones(std::move(range_del_iter));
   }
+  // immutable memtable 是接受读请求的，且只读。主要用在flush过程，当active memtable被写满（达到write_buffer_size的限制）会切换为immutable memtable
   // Collect all needed child iterators for immutable memtables
   if (s.ok()) {
     super_version->imm->AddIterators(read_options, &merge_iter_builder);
+    // mem 和 imm 各自有各自的 Tombstone member
     if (!read_options.ignore_range_deletions) {
       s = super_version->imm->AddRangeTombstoneIterators(read_options, arena,
                                                          range_del_agg);
@@ -2960,7 +2972,7 @@ bool DBImpl::KeyMayExist(const ReadOptions& read_options,
   // In this case, key may still exist in the table.
   return s.ok() || s.IsIncomplete();
 }
-
+// 构造一个迭代器
 Iterator* DBImpl::NewIterator(const ReadOptions& read_options,
                               ColumnFamilyHandle* column_family) {
   if (read_options.managed) {
@@ -3019,7 +3031,7 @@ Iterator* DBImpl::NewIterator(const ReadOptions& read_options,
   }
   return result;
 }
-
+// 创建一个 ArenaWrappedDBIter 迭代器 即一个用来进行空间分配的迭代器，后续InternalIterator相关的迭代器都需要通过arena优先分配迭代器所需空间。
 ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
                                             ColumnFamilyData* cfd,
                                             SequenceNumber snapshot,
@@ -3088,16 +3100,20 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
   // Laying out the iterators in the order of being accessed makes it more
   // likely that any iterator pointer is close to the iterator it points to so
   // that they are likely to be in the same cache line and/or page.
+  // 先创建一个 构造一个arena迭代器，负责后续的 internal迭代器的空间分配
+  // 内部会先创建一个Arena迭代器，再创建DBIter迭代器
   ArenaWrappedDBIter* db_iter = NewArenaWrappedDbIterator(
       env_, read_options, *cfd->ioptions(), sv->mutable_cf_options, sv->current,
       snapshot, sv->mutable_cf_options.max_sequential_skip_in_iterations,
       sv->version_number, read_callback, this, cfd, expose_blob_index,
       read_options.snapshot != nullptr ? false : allow_refresh);
+  // 构造internal 迭代器，包括一系列 MergingIterator: MemtableIter, LevelIter, TwoLevelIter
 
   InternalIterator* internal_iter = NewInternalIterator(
       db_iter->GetReadOptions(), cfd, sv, db_iter->GetArena(),
       db_iter->GetRangeDelAggregator(), snapshot,
       /* allow_unprepared_value */ true);
+  //  绑定db_iter和internal_iter
   db_iter->SetIterUnderDBIter(internal_iter);
 
   return db_iter;
@@ -3117,6 +3133,7 @@ Status DBImpl::NewIterators(
   ReadCallback* read_callback = nullptr;  // No read callback provided.
   iterators->clear();
   iterators->reserve(column_families.size());
+  // 一种特殊的迭代器
   if (read_options.tailing) {
 #ifdef ROCKSDB_LITE
     return Status::InvalidArgument(
@@ -3138,9 +3155,11 @@ Status DBImpl::NewIterators(
     // Note: no need to consider the special case of
     // last_seq_same_as_publish_seq_==false since NewIterators is overridden in
     // WritePreparedTxnDB
+    // 具体创建之前会拿到当前db最新的或者用户指定的一个snapshot (落到底层internal_key的话也就是上文中提到的seqno),保证后续的读取都只读取小于等于当前snapshot的目标key
     auto snapshot = read_options.snapshot != nullptr
                         ? read_options.snapshot->GetSequenceNumber()
                         : versions_->LastSequence();
+    // 将不同 cf 的迭代器加入到列表中
     for (size_t i = 0; i < column_families.size(); ++i) {
       auto* cfd =
           static_cast_with_check<ColumnFamilyHandleImpl>(column_families[i])

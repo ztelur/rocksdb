@@ -54,6 +54,7 @@ class Version;
 // combines multiple entries for the same userkey found in the DB
 // representation into a single entry while accounting for sequence
 // numbers, deletion markers, overwrites, etc.
+// 一般用户用到的 Iter
 class DBIter final : public Iterator {
  public:
   // The following is grossly complicated. TODO: clean it up

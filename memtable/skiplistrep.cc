@@ -328,7 +328,10 @@ public:
     InlineSkipList<const MemTableRep::KeyComparator&>::Iterator iter_;
     InlineSkipList<const MemTableRep::KeyComparator&>::Iterator prev_;
   };
-
+  /**
+   * GetIterator过程中会根据用户传入的lookahead(预读数据的大小)
+   * 来创建对应的SkipListRep 的迭代器，如果上层调用的next或者prev，到更加底层的数据结构中就是sikplist的next和prev了。
+   */
   MemTableRep::Iterator* GetIterator(Arena* arena = nullptr) override {
     if (lookahead_ > 0) {
       void *mem =

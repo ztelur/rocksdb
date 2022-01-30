@@ -40,6 +40,15 @@ int main() {
   assert(s.ok());
   assert(value == "value");
 
+
+//  rocksdb::Iterator* it = db->NewIterator(rocksdb::ReadOptions());
+//
+//  for (it -> Seek("key"); it->Valid() && it->key().ToString() < "key3";
+//       it -> Next()) {
+//
+//  }
+
+
   // atomically apply a set of updates
   {
     WriteBatch batch;

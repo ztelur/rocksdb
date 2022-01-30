@@ -12,6 +12,10 @@
 // A thread local context for gathering io-stats efficiently and transparently.
 // Use SetPerfLevel(PerfLevel::kEnableTime) to enable time stats.
 
+/**
+ * 是io层面的耗时统计，比如write,read等系统调用的耗时，计数
+ */
+
 namespace ROCKSDB_NAMESPACE {
 
 // EXPERIMENTAL: the IO statistics for tiered storage. It matches with each
@@ -39,7 +43,7 @@ struct FileIOByTemperature {
     cold_file_read_count = 0;
   }
 };
-
+// 读取和写入相关的计时
 struct IOStatsContext {
   // reset all io-stats counter to zero
   void Reset();
@@ -59,12 +63,15 @@ struct IOStatsContext {
   // time spent in fallocate().
   uint64_t allocate_nanos;
   // time spent in write() and pwrite().
+  // write 和 pwrite系统调用的耗时
   uint64_t write_nanos;
   // time spent in read() and pread()
+  // 调用read和 pread系统调用的耗时统计
   uint64_t read_nanos;
   // time spent in sync_file_range().
   uint64_t range_sync_nanos;
   // time spent in fsync
+  // 调用fsync系统调用的耗时
   uint64_t fsync_nanos;
   // time spent in preparing write (fallocate etc).
   uint64_t prepare_write_nanos;

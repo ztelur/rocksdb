@@ -1346,7 +1346,7 @@ if(WITH_TESTS)
         examples/simple_example.cc
         examples/read_from_immutable_example.cc
         examples/learn_wal_example.cc
-
+        examples/transaction_example.cc
     )
   endif()
   if(WITH_LIBRADOS)

@@ -50,6 +50,7 @@ class MergingIterator : public InternalIterator {
     children_.resize(n);
     for (int i = 0; i < n; i++) {
       // 传入的list也就是函数中的children中的所有元素添加到一个vector中
+      // 将传入的元素添加到rocksdb自实现的autovector之中
       children_[i].Set(children[i]);
     }
   }
@@ -84,11 +85,14 @@ class MergingIterator : public InternalIterator {
   void SeekToFirst() override {
     ClearHeaps();
     status_ = Status::OK();
+    // 将// 构建最小堆
+    //  // 堆顶元素是所有堆元素中的最小值
     for (auto& child : children_) {
       child.SeekToFirst();
       AddToMinHeapOrCheckStatus(&child);
     }
     direction_ = kForward;
+    // 取堆顶的元素，表示当前迭代器所指向的key
     current_ = CurrentForward();
   }
 
@@ -302,6 +306,7 @@ class MergingIterator : public InternalIterator {
   IteratorWrapper* current_;
   // If any of the children have non-ok status, this is one of them.
   Status status_;
+  // MergingIterator 底层是通过最小堆 数据结构来维护的
   MergerMinIterHeap minHeap_;
 
   // Max heap is used for reverse iteration, which is way less common than
@@ -430,11 +435,13 @@ InternalIterator* NewMergingIterator(const InternalKeyComparator* cmp,
     }
   }
 }
-
+// MergingIterator 底层是通过最小堆 数据结构来维护的，可以通过MergeIteratorBuilder构造过程来看到
 MergeIteratorBuilder::MergeIteratorBuilder(
     const InternalKeyComparator* comparator, Arena* a, bool prefix_seek_mode)
     : first_iter(nullptr), use_merging_iter(false), arena(a) {
+  // 首先用 arena 来申请对应的空间
   auto mem = arena->AllocateAligned(sizeof(MergingIterator));
+  // 使用刚才申请的空间来构造
   merge_iter =
       new (mem) MergingIterator(comparator, nullptr, 0, true, prefix_seek_mode);
 }

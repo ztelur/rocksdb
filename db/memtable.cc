@@ -291,6 +291,7 @@ class MemTableIterator : public InternalIterator {
         arena_mode_(arena != nullptr),
         value_pinned_(
             !mem.GetImmutableMemTableOptions()->inplace_update_support) {
+    // 根据不同的场景创建迭代器
     if (use_range_del_table) {
       iter_ = mem.range_del_table_->GetIterator(arena);
     } else if (prefix_extractor_ != nullptr && !read_options.total_order_seek &&
@@ -434,10 +435,11 @@ class MemTableIterator : public InternalIterator {
   bool arena_mode_;
   bool value_pinned_;
 };
-
+// MemTable 构造的迭代器，会根据不同的底层数据类型进行实现
 InternalIterator* MemTable::NewIterator(const ReadOptions& read_options,
                                         Arena* arena) {
   assert(arena != nullptr);
+  // arena 进行分配内存
   auto mem = arena->AllocateAligned(sizeof(MemTableIterator));
   return new (mem) MemTableIterator(*this, read_options, arena);
 }

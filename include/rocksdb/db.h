@@ -744,6 +744,7 @@ class DB {
   // The returned iterator should be deleted before this db is deleted.
   virtual Iterator* NewIterator(const ReadOptions& options,
                                 ColumnFamilyHandle* column_family) = 0;
+  // 创建一个 DBIterator
   virtual Iterator* NewIterator(const ReadOptions& options) {
     return NewIterator(options, DefaultColumnFamily());
   }

@@ -14,15 +14,15 @@ namespace ROCKSDB_NAMESPACE {
 
 // How much perf stats to collect. Affects perf_context and iostats_context.
 enum PerfLevel : unsigned char {
-  kUninitialized = 0,             // unknown setting
-  kDisable = 1,                   // disable perf stats
-  kEnableCount = 2,               // enable only count stats
-  kEnableTimeExceptForMutex = 3,  // Other than count stats, also enable time
+  kUninitialized = 0,             // unknown setting // 什么也不监控，一般不实用这个选项
+  kDisable = 1,                   // disable perf stats  关闭profling功能
+  kEnableCount = 2,               // enable only count stats 仅开启count计数的profling 功能
+  kEnableTimeExceptForMutex = 3,  // Other than count stats, also enable time 仅开启time profiling功能，我们耗时方面分析就直接开启这个级别。
                                   // stats except for mutexes
   // Other than time, also measure CPU time counters. Still don't measure
   // time (neither wall time nor CPU time) for mutexes.
-  kEnableTimeAndCPUTimeExceptForMutex = 4,
-  kEnableTime = 5,  // enable count and time stats
+  kEnableTimeAndCPUTimeExceptForMutex = 4, // 仅开启cpu 耗时的统计
+  kEnableTime = 5,  // enable count and time stats // 开启所有stats的统计，包括耗时和计数
   kOutOfBounds = 6  // N.B. Must always be the last value!
 };
 

@@ -85,14 +85,16 @@ Status ArenaWrappedDBIter::Refresh() {
   }
   return Status::OK();
 }
-
+// 创建一个 创建一个Arena迭代器
 ArenaWrappedDBIter* NewArenaWrappedDbIterator(
     Env* env, const ReadOptions& read_options, const ImmutableOptions& ioptions,
     const MutableCFOptions& mutable_cf_options, const Version* version,
     const SequenceNumber& sequence, uint64_t max_sequential_skip_in_iterations,
     uint64_t version_number, ReadCallback* read_callback, DBImpl* db_impl,
     ColumnFamilyData* cfd, bool expose_blob_index, bool allow_refresh) {
+  // 创建一个Arena迭代器
   ArenaWrappedDBIter* iter = new ArenaWrappedDBIter();
+  // 为db迭代器分配空间，并创建db迭代器
   iter->Init(env, read_options, ioptions, mutable_cf_options, version, sequence,
              max_sequential_skip_in_iterations, version_number, read_callback,
              db_impl, cfd, expose_blob_index, allow_refresh);

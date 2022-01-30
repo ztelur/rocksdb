@@ -175,7 +175,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     return PipelinedWriteImpl(write_options, my_batch, callback, log_used,
                               log_ref, disable_memtable, seq_used);
   }
-
+  // 使用宏来进行 profile 的统计
   PERF_TIMER_GUARD(write_pre_and_post_process_time);
   // 构造一个Writer
   WriteThread::Writer w(write_options, my_batch, callback, log_ref,
