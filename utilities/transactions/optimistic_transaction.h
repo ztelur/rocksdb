@@ -48,7 +48,7 @@ class OptimisticTransaction : public TransactionBaseImpl {
   Status Rollback() override;
 
   Status SetName(const TransactionName& name) override;
-
+  // 乐观事务模式下尝试加锁
  protected:
   Status TryLock(ColumnFamilyHandle* column_family, const Slice& key,
                  bool read_only, bool exclusive, const bool do_validate = true,
@@ -87,6 +87,7 @@ class OptimisticTransactionCallback : public WriteCallback {
       : txn_(txn) {}
 
   Status Callback(DB* db) override {
+    // CheckTransactionForConflicts 进行乐观事务模式写入时的检查
     return txn_->CheckTransactionForConflicts(db);
   }
 

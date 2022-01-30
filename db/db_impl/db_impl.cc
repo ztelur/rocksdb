@@ -233,6 +233,15 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
       // the 2nd queue could change what is visible to the readers. In this
       // cases, last_seq_same_as_publish_seq_==false, the 2nd queue maintains a
       // separate variable to indicate the last published sequence.
+      //  // last_sequencee_ 始终由也写入内存表的主队列维护。
+      //      // 当禁用 two_write_queues_ 时，
+      //      // 内存表中的最后一个 seq 与发布给读者的最后一个 seq 相同。
+      //      // 当它启用但 seq_per_batch_ 被禁用时，
+      //      // memtable 中的最后一个 seq 仍然表示最后发布的 seq，
+      //      // 因为进入第二个队列的 wal-only 写入不消耗序列号。
+      //      // 否则，由第二个队列执行的写入可能会改变读者可见的内容。
+      //      // 在这种情况下，last_seq_same_as_publish_seq_==false，
+      //      // 第二个队列维护一个单独的变量来指示最后发布的序列。
       last_seq_same_as_publish_seq_(
           !(seq_per_batch && options.two_write_queues)),
       // Since seq_per_batch_ is currently set only by WritePreparedTxn which
@@ -3155,6 +3164,7 @@ const Snapshot* DBImpl::GetSnapshotForWriteConflictBoundary() {
 SnapshotImpl* DBImpl::GetSnapshotImpl(bool is_write_conflict_boundary,
                                       bool lock) {
   int64_t unix_time = 0;
+  // 拿当前的 unix_time
   immutable_db_options_.clock->GetCurrentTime(&unix_time)
       .PermitUncheckedError();  // Ignore error
   SnapshotImpl* s = new SnapshotImpl;
@@ -3163,6 +3173,7 @@ SnapshotImpl* DBImpl::GetSnapshotImpl(bool is_write_conflict_boundary,
     mutex_.Lock();
   }
   // returns null if the underlying memtable does not support snapshot.
+  // 如果底层的 memtable 不支持 snapshot 则返回 null
   if (!is_snapshot_supported_) {
     if (lock) {
       mutex_.Unlock();
@@ -3170,9 +3181,11 @@ SnapshotImpl* DBImpl::GetSnapshotImpl(bool is_write_conflict_boundary,
     delete s;
     return nullptr;
   }
+  // seq 是 rocksdb 中很关键的数据
   auto snapshot_seq = last_seq_same_as_publish_seq_
                           ? versions_->LastSequence()
                           : versions_->LastPublishedSequence();
+  // 调用 snapshots_ 的 New 方法传入新创建的
   SnapshotImpl* snapshot =
       snapshots_.New(s, snapshot_seq, unix_time, is_write_conflict_boundary);
   if (lock) {
@@ -3494,6 +3507,7 @@ bool DBImpl::GetAggregatedIntProperty(const Slice& property,
   return ret;
 }
 
+// 拿到一个 cf 的  superVersion，拿到一个 thrae local 的 superversion
 SuperVersion* DBImpl::GetAndRefSuperVersion(ColumnFamilyData* cfd) {
   // TODO(ljin): consider using GetReferencedSuperVersion() directly
   return cfd->GetThreadLocalSuperVersion(this);
@@ -4439,6 +4453,7 @@ void DumpRocksDBBuildVersion(Logger* log) {
   }
 }
 
+// 获取从 memtable 中获取最早的 sequence number ，而不需要依赖去 sst file
 #ifndef ROCKSDB_LITE
 SequenceNumber DBImpl::GetEarliestMemTableSequenceNumber(SuperVersion* sv,
                                                          bool include_history) {
@@ -4453,7 +4468,7 @@ SequenceNumber DBImpl::GetEarliestMemTableSequenceNumber(SuperVersion* sv,
 
   return earliest_seq;
 }
-
+// 获取 key 最近的 sequencse
 Status DBImpl::GetLatestSequenceForKey(
     SuperVersion* sv, const Slice& key, bool cache_only,
     SequenceNumber lower_bound_seq, SequenceNumber* seq, std::string* timestamp,
@@ -4463,6 +4478,7 @@ Status DBImpl::GetLatestSequenceForKey(
   SequenceNumber max_covering_tombstone_seq = 0;
 
   ReadOptions read_options;
+  // 获取最近的 seq
   SequenceNumber current_seq = versions_->LastSequence();
 
   ColumnFamilyData* cfd = sv->cfd;
@@ -4483,7 +4499,7 @@ Status DBImpl::GetLatestSequenceForKey(
 
   *seq = kMaxSequenceNumber;
   *found_record_for_key = false;
-
+  // sv->mem->Get
   // Check if there is a record for this key in the latest memtable
   sv->mem->Get(lkey, /*value=*/nullptr, timestamp, &s, &merge_context,
                &max_covering_tombstone_seq, seq, read_options,
@@ -4507,7 +4523,7 @@ Status DBImpl::GetLatestSequenceForKey(
     *found_record_for_key = true;
     return Status::OK();
   }
-
+  // v->imm->Get
   SequenceNumber lower_bound_in_mem = sv->mem->GetEarliestSequenceNumber();
   if (lower_bound_in_mem != kMaxSequenceNumber &&
       lower_bound_in_mem < lower_bound_seq) {
@@ -4539,14 +4555,14 @@ Status DBImpl::GetLatestSequenceForKey(
     *found_record_for_key = true;
     return Status::OK();
   }
-
+  // 				sv->imm->Get
   SequenceNumber lower_bound_in_imm = sv->imm->GetEarliestSequenceNumber();
   if (lower_bound_in_imm != kMaxSequenceNumber &&
       lower_bound_in_imm < lower_bound_seq) {
     *found_record_for_key = false;
     return Status::OK();
   }
-
+  // sv->imm->GetFromHistory
   // Check if there is a record for this key in the immutable memtables
   sv->imm->GetFromHistory(lkey, /*value=*/nullptr, timestamp, &s,
                           &merge_context, &max_covering_tombstone_seq, seq,
@@ -4581,6 +4597,7 @@ Status DBImpl::GetLatestSequenceForKey(
   // SST files if cache_only=true?
   if (!cache_only) {
     // Check tables
+    // sv->current->Get
     sv->current->Get(read_options, lkey, /*value=*/nullptr, timestamp, &s,
                      &merge_context, &max_covering_tombstone_seq,
                      nullptr /* value_found */, found_record_for_key, seq,

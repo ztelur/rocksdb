@@ -55,6 +55,10 @@ Status DBImpl::Write(const WriteOptions& write_options, WriteBatch* my_batch) {
 }
 
 #ifndef ROCKSDB_LITE
+/**
+ * 在WriteWithCallback 会在每次写入之前对所有要写入的请求执行 callback，
+ * WriteImpl 中 writer->CheckCallback(this)，检测是否满足写入的要求。
+ */
 Status DBImpl::WriteWithCallback(const WriteOptions& write_options,
                                  WriteBatch* my_batch,
                                  WriteCallback* callback) {

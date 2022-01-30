@@ -204,6 +204,7 @@ Status TransactionBaseImpl::Get(const ReadOptions& read_options,
 Status TransactionBaseImpl::Get(const ReadOptions& read_options,
                                 ColumnFamilyHandle* column_family,
                                 const Slice& key, PinnableSlice* pinnable_val) {
+  // 因为有事务，所以调用 WriteBatchWithIndex 的 GetFromBatchAndDB 接口
   return write_batch_.GetFromBatchAndDB(db_, read_options, column_family, key,
                                         pinnable_val);
 }
@@ -570,10 +571,12 @@ void TransactionBaseImpl::TrackKey(uint32_t cfh_id, const std::string& key,
   r.exclusive = exclusive;
 
   // Update map of all tracked keys for this transaction
+  // 进行记录
   tracked_locks_->Track(r);
 
   if (save_points_ != nullptr && !save_points_->empty()) {
     // Update map of tracked keys in this SavePoint
+    // 如果有检查点，也进行记录
     save_points_->top().new_locks_->Track(r);
   }
 }

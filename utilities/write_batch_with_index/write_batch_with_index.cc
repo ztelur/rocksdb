@@ -458,7 +458,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
   return GetFromBatchAndDB(db, read_options, column_family, key, pinnable_val,
                            nullptr);
 }
-
+// 为事务模式使用
 Status WriteBatchWithIndex::GetFromBatchAndDB(
     DB* db, const ReadOptions& read_options, ColumnFamilyHandle* column_family,
     const Slice& key, PinnableSlice* pinnable_val, ReadCallback* callback) {
@@ -469,6 +469,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(
   // we cannot pin it as otherwise the returned value will not be available
   // after the transaction finishes.
   std::string& batch_value = *pinnable_val->GetSelf();
+  // 从 wbwi 中获取
   auto result = wbwii.GetFromBatch(this, key, &batch_value, &s);
 
   if (result == WBWIIteratorImpl::kFound) {
@@ -483,6 +484,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(
          result == WBWIIteratorImpl::kNotFound);
 
   // Did not find key in batch OR could not resolve Merges.  Try DB.
+  // 从 db 获取
   if (!callback) {
     s = db->Get(read_options, column_family, key, pinnable_val);
   } else {

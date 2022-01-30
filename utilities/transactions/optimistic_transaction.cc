@@ -57,11 +57,12 @@ Status OptimisticTransaction::Prepare() {
   return Status::InvalidArgument(
       "Two phase commit not supported for optimistic transactions.");
 }
-
+// 乐观模式下的提交操作
 Status OptimisticTransaction::Commit() {
   auto txn_db_impl = static_cast_with_check<OptimisticTransactionDBImpl,
                                             OptimisticTransactionDB>(txn_db_);
   assert(txn_db_impl);
+  // 不同的提交校验策略
   switch (txn_db_impl->GetValidatePolicy()) {
     case OccValidationPolicy::kValidateParallel:
       return CommitWithParallelValidate();
@@ -73,12 +74,17 @@ Status OptimisticTransaction::Commit() {
   // unreachable, just void compiler complain
   return Status::OK();
 }
-
+// 乐观模式下的一种提交检测
 Status OptimisticTransaction::CommitWithSerialValidate() {
   // Set up callback which will call CheckTransactionForConflicts() to
   // check whether this transaction is safe to be committed.
+  // 创建一个 callback 函数
   OptimisticTransactionCallback callback(this);
-
+  /**
+   * 直接拿到 basedb，调用 WriteWithCallback 函数，其中 callback 的实现是
+   * OptimisticTransactionCallback::Callback，也就是 OptimisticTransaction::CheckTransactionForConflicts
+   * 如果做完冲突检测，这一批事务的 tracker key都没有问题，则可以提交
+   */
   DBImpl* db_impl = static_cast_with_check<DBImpl>(db_->GetRootDB());
 
   Status s = db_impl->WriteWithCallback(
@@ -90,7 +96,11 @@ Status OptimisticTransaction::CommitWithSerialValidate() {
 
   return s;
 }
-
+// 乐观事务模式下的另外一种 commit 检测模式
+// 冲突检测的内部实现就不过多介绍了，都是一样的，主要是这个策略如何调度 冲突检测的
+/**
+ * 在写入之前 会先对所有的 tracked_locks_ 中的多事务的 key 按照顺序进行加锁，然后统一进行 多事务的冲突检测，冲突检测通过之后直接调度写入。
+ */
 Status OptimisticTransaction::CommitWithParallelValidate() {
   auto txn_db_impl = static_cast_with_check<OptimisticTransactionDBImpl,
                                             OptimisticTransactionDB>(txn_db_);
@@ -117,9 +127,10 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   // In this way, txns from different threads all obey this rule so that
   // deadlock can be avoided.
   for (auto v : lk_idxes) {
+    // 将涉及的 key 进行加锁
     lks.emplace_back(txn_db_impl->LockBucket(v));
   }
-
+  // 进行检查
   Status s = TransactionUtil::CheckKeysForConflicts(db_impl, *tracked_locks_,
                                                     true /* cache_only */);
   if (!s.ok()) {
@@ -142,10 +153,13 @@ Status OptimisticTransaction::Rollback() {
 // Record this key so that we can check it for conflicts at commit time.
 //
 // 'exclusive' is unused for OptimisticTransaction.
+// 乐观模式下尝试加锁 相比于 PessimisticTransaction 的主要差异就是 冲突检测的时机 是在 Commit 阶段才进行。
+//它在 TryLock 的时候 会将当前 要更新的 key的信息添加到 LockTracker 中
 Status OptimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
                                       const Slice& key, bool read_only,
                                       bool exclusive, const bool do_validate,
                                       const bool assume_tracked) {
+  // 这种场景下必须支持 assume_tracked
   assert(!assume_tracked);  // not supported
   (void)assume_tracked;
   if (!do_validate) {
@@ -163,7 +177,7 @@ Status OptimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
   }
 
   std::string key_str = key.ToString();
-
+  // 将当前要处理的 key 的 sequence number 记录到 tracker 中
   TrackKey(cfh_id, key_str, seq, read_only, exclusive);
 
   // Always return OK. Confilct checking will happen at commit time.
@@ -176,6 +190,13 @@ Status OptimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
 //
 // Should only be called on writer thread in order to avoid any race conditions
 // in detecting write conflicts.
+/**
+ * 着 前面 TryLock 过程中获取到的 LockTracker 信息 进行seq num的比较，和 PessimisticTransaction
+ * 事务中的 ValidSnapshot 做的事情一样，检测 tracker 中要提交的key 的 seq 是否比当前db 中最新的
+ * 已经commit 的 seq小，用来确定这个事务执行 中间是否有外部事务 对当前key 的更新(完成 commit的操作)。
+ * @param db
+ * @return
+ */
 Status OptimisticTransaction::CheckTransactionForConflicts(DB* db) {
   auto db_impl = static_cast_with_check<DBImpl>(db);
 

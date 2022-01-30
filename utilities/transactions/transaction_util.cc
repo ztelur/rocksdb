@@ -18,7 +18,7 @@
 #include "util/string_util.h"
 
 namespace ROCKSDB_NAMESPACE {
-
+// 检查是否冲突
 Status TransactionUtil::CheckKeyForConflicts(
     DBImpl* db_impl, ColumnFamilyHandle* column_family, const std::string& key,
     SequenceNumber snap_seq, const std::string* const read_ts, bool cache_only,
@@ -26,7 +26,9 @@ Status TransactionUtil::CheckKeyForConflicts(
   Status result;
 
   auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
+  // 从 cfhandler 中 拿到 cf data
   auto cfd = cfh->cfd();
+  // 从version 系统中 取一个local_version GetThreadLocalSuperVersion
   SuperVersion* sv = db_impl->GetAndRefSuperVersion(cfd);
 
   if (sv == nullptr) {
@@ -37,16 +39,16 @@ Status TransactionUtil::CheckKeyForConflicts(
   if (result.ok()) {
     SequenceNumber earliest_seq =
         db_impl->GetEarliestMemTableSequenceNumber(sv, true);
-
+    // 进行 CheckKey 进行检查
     result = CheckKey(db_impl, sv, earliest_seq, snap_seq, key, read_ts,
                       cache_only, snap_checker, min_uncommitted);
-
+    // 归还
     db_impl->ReturnAndCleanupSuperVersion(cfd, sv);
   }
 
   return result;
 }
-
+// 悲观事务模式下，检查 key 是否冲突
 Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
                                  SequenceNumber earliest_seq,
                                  SequenceNumber snap_seq,
@@ -68,6 +70,8 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
   // to this key after it was accessed in this transaction.  But if the
   // Memtables do not contain a long enough history, we must fail the
   // transaction.
+  // 因为检查 sst file 太慢了，所以 可以用 memtable 来检查一下从事务开始，是否有write
+  // 但是，如果 memtable 没有包含足够的数据，我们就只有fail 事务
   if (earliest_seq == kMaxSequenceNumber) {
     // The age of this memtable is unknown.  Cannot rely on it to check
     // for recent writes.  This error shouldn't happen often in practice as
@@ -117,20 +121,28 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
     // min_uncommitted might create conflicts, so we need  to read them out
     // from the DB, and call callback to snap_checker to determine. So only
     // keys lower than min_uncommitted can be skipped.
+    // 当 min_uncommitter = kMaxSequenceNumber 时，写操作会导致冲突，所以一般都是大于 snap_seq
+    // 否则，
     SequenceNumber lower_bound_seq =
         (min_uncommitted == kMaxSequenceNumber) ? snap_seq : min_uncommitted;
+    // 调用 GetLatestSequenceForKey
     Status s = db_impl->GetLatestSequenceForKey(
         sv, key, !need_to_read_sst, lower_bound_seq, &seq,
         !read_ts ? nullptr : &timestamp, &found_record_for_key,
         /*is_blob_index=*/nullptr);
 
     if (!(s.ok() || s.IsNotFound() || s.IsMergeInProgress())) {
+      // 如果没有找到
       result = s;
     } else if (found_record_for_key) {
+      // 如果找到了 key 对应的记录
+      // 判断冲突，如果 snap_checker == null 则只要取到的 seq > snap_seq 就是表示冲突
+      // 否则 交给 snap_checker 去判断
       bool write_conflict = snap_checker == nullptr
                                 ? snap_seq < seq
                                 : !snap_checker->IsVisible(seq);
       // Perform conflict checking based on timestamp if applicable.
+      // 如果不冲突，在根据 timestamp 进行冲突检测
       if (!write_conflict && read_ts != nullptr) {
         ColumnFamilyData* cfd = sv->cfd;
         assert(cfd);
@@ -149,7 +161,16 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
 
   return result;
 }
-
+/**
+ * 乐观事务模式下commit时会进行校验，使用该函数进行检查
+ * 前面 TryLock 过程中获取到的 LockTracker 信息 进行seq num的比较，和 PessimisticTransaction 事务中的
+ * ValidSnapshot 做的事情一样，检测 tracker 中要提交的key 的 seq 是否比当前db 中最新的
+ * 已经commit 的 seq小，用来确定这个事务执行 中间是否有外部事务 对当前key 的更新(完成 commit的操作)
+ * @param db_impl
+ * @param tracker
+ * @param cache_only
+ * @return
+ */
 Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
                                               const LockTracker& tracker,
                                               bool cache_only) {

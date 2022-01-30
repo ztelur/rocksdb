@@ -66,6 +66,7 @@ class SnapshotList {
 
   SnapshotImpl* New(SnapshotImpl* s, SequenceNumber seq, uint64_t unix_time,
                     bool is_write_conflict_boundary) {
+    // 将数据填充进 snapshot，然后将其加入到 SnapshotList 中
     s->number_ = seq;
     s->unix_time_ = unix_time;
     s->is_write_conflict_boundary_ = is_write_conflict_boundary;

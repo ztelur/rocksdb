@@ -640,7 +640,7 @@ Status PessimisticTransaction::TryLock(ColumnFamilyHandle* column_family,
     // since the snapshot.  This must be done after we locked the key.
     // If we already have validated an earilier snapshot it must has been
     // reflected in tracked_at_seq and ValidateSnapshot will return OK.
-    // 需要确定 snapshot 之后，没有被修改过
+    // 也就是 set_snapshot 后的场景，需要确定 snapshot 之后，没有被修改过
     if (s.ok()) {
       s = ValidateSnapshot(column_family, key, &tracked_at_seq);
 
@@ -724,9 +724,10 @@ Status PessimisticTransaction::ValidateSnapshot(
     ColumnFamilyHandle* column_family, const Slice& key,
     SequenceNumber* tracked_at_seq) {
   assert(snapshot_);
-
+  // 拿出 set snapshot 时设置的 sequence number
   SequenceNumber snap_seq = snapshot_->GetSequenceNumber();
   if (*tracked_at_seq <= snap_seq) {
+    // 表示之前已经校验过一遍了，就没必要继续检查了。
     // If the key has been previous validated (or locked) at a sequence number
     // earlier than the current snapshot's sequence number, we already know it
     // has not been modified aftter snap_seq either.
@@ -737,7 +738,9 @@ Status PessimisticTransaction::ValidateSnapshot(
   // 2: snap_seq < tracked_at_seq: last time we lock the key was via
   // do_validate=false which means we had skipped ValidateSnapshot. In both
   // cases we should do ValidateSnapshot now.
-
+  // 不然就有两种情况
+  // 1: tracked_at_seq == kMaxSequenceNumber 表示第一次处理该 key
+  // 2: snap_seq < tracked_at_seq 上次可能跳过了
   *tracked_at_seq = snap_seq;
 
   ColumnFamilyHandle* cfh =

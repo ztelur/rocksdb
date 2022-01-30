@@ -297,6 +297,7 @@ class WriteBatchWithIndexInternal {
   //   and return kMergeInProgress
   // If batch does not contain this key, return kNotFound
   // Else, return kError on error with error Status stored in *s.
+  // 根据内部的缓存进行处理
   WBWIIteratorImpl::Result GetFromBatch(WriteBatchWithIndex* batch,
                                         const Slice& key, std::string* value,
                                         Status* s) {

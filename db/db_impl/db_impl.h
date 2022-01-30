@@ -2122,7 +2122,7 @@ class DBImpl : public DB {
   FlushScheduler flush_scheduler_;
 
   TrimHistoryScheduler trim_history_scheduler_;
-
+  // snapshotList
   SnapshotList snapshots_;
 
   // For each background job, pending_outputs_ keeps the current file number at
@@ -2292,6 +2292,7 @@ class DBImpl : public DB {
 
   // LastSequence also indicates last published sequence visibile to the
   // readers. Otherwise LastPublishedSequence should be used.
+  // 最后一个 sequence 就是 对所有 readers 公开的 sequence，否则要使用 LastPublishedSequence
   const bool last_seq_same_as_publish_seq_;
   // It indicates that a customized gc algorithm must be used for
   // flush/compaction and if it is not provided vis SnapshotChecker, we should

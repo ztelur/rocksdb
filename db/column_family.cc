@@ -1197,6 +1197,7 @@ SuperVersion* ColumnFamilyData::GetReferencedSuperVersion(DBImpl* db) {
   return sv;
 }
 
+// 获取一个 thread local super version 在读之前需要获得新的superversion（最新的versionset）
 SuperVersion* ColumnFamilyData::GetThreadLocalSuperVersion(DBImpl* db) {
   // The SuperVersion is cached in thread local storage to avoid acquiring
   // mutex when SuperVersion does not change since the last use. When a new
@@ -1209,6 +1210,9 @@ SuperVersion* ColumnFamilyData::GetThreadLocalSuperVersion(DBImpl* db) {
   // have swapped in kSVObsolete. We re-check the value at when returning
   // SuperVersion back to thread local, with an atomic compare and swap.
   // The superversion will need to be released if detected to be stale.
+  // //通过swap获得当前的superversion（每个线程都用InUse对象替换tls对象）
+  //  //如果没有写，那么在执行ReturnThreadLocalSuperVersion前，tls都保持inuse对象
+  // 标记当前创建的 tls 是 kSVInUse，
   void* ptr = local_sv_->Swap(SuperVersion::kSVInUse);
   // Invariant:
   // (1) Scrape (always) installs kSVObsolete in ThreadLocal storage
@@ -1217,6 +1221,8 @@ SuperVersion* ColumnFamilyData::GetThreadLocalSuperVersion(DBImpl* db) {
   // (if no Scrape happens).
   assert(ptr != SuperVersion::kSVInUse);
   SuperVersion* sv = static_cast<SuperVersion*>(ptr);
+  // 如果刚获取完superversion，就发现已经过期了。那就把这个给删了，直接通过加锁获取当前最新的super version
+  // 检测标记之后 可能因为writer 的 install 导致的Obsolete，则需要重新获取全局的sv
   if (sv == SuperVersion::kSVObsolete ||
       sv->version_number != super_version_number_.load()) {
     RecordTick(ioptions_.stats, NUMBER_SUPERVERSION_ACQUIRES);
@@ -1224,9 +1230,11 @@ SuperVersion* ColumnFamilyData::GetThreadLocalSuperVersion(DBImpl* db) {
 
     if (sv && sv->Unref()) {
       RecordTick(ioptions_.stats, NUMBER_SUPERVERSION_CLEANUPS);
+      // 加锁
       db->mutex()->Lock();
       // NOTE: underlying resources held by superversion (sst files) might
       // not be released until the next background job.
+      // 因为当前拿到的sv 已经过期了， 需要清理掉它占用的资源
       sv->Cleanup();
       if (db->immutable_db_options().avoid_unnecessary_blocking_io) {
         db->AddSuperVersionsToFreeQueue(sv);
@@ -1237,11 +1245,15 @@ SuperVersion* ColumnFamilyData::GetThreadLocalSuperVersion(DBImpl* db) {
     } else {
       db->mutex()->Lock();
     }
+    // 重新获取一个新的
+    // 这里一定要加锁，防止在被后台线程作出变更，并获取当前的全局super_versio
     sv = super_version_->Ref();
+    //
     db->mutex()->Unlock();
 
     delete sv_to_delete;
   }
+  // // 当然，如果拿到的tls sv 并没有被标记为过期，则直接返回访问即可。
   assert(sv != nullptr);
   return sv;
 }

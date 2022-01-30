@@ -172,6 +172,7 @@ class PointLockManager : public LockManager {
   InstrumentedMutex lock_map_mutex_;
 
   // Map of ColumnFamilyId to locked key info
+  // 整个DB 内部维护了一个大的 LockMaps，它是一个 column family id 到 LockMap的一个 unodered_map。这个DB内部的每一个 cf 都有一个自己的LockMap。
   using LockMaps = std::unordered_map<uint32_t, std::shared_ptr<LockMap>>;
   LockMaps lock_maps_;
 
@@ -183,8 +184,10 @@ class PointLockManager : public LockManager {
   std::mutex wait_txn_map_mutex_;
 
   // Maps from waitee -> number of waiters.
+  // 活跃事务 和 该事务在 有向无环图中的节点个数（也可以理解为权重）
   HashMap<TransactionID, int> rev_wait_txn_map_;
   // Maps from waiter -> waitee.
+  // 保存整个活跃事务视图，用于 广度优先遍历。保存的内容是 当前事务 和 该事务有关联的事务信息
   HashMap<TransactionID, TrackedTrxInfo> wait_txn_map_;
   DeadlockInfoBuffer dlock_buffer_;
 

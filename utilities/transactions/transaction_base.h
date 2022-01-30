@@ -59,7 +59,7 @@ class TransactionBaseImpl : public Transaction {
 
   Status Get(const ReadOptions& options, ColumnFamilyHandle* column_family,
              const Slice& key, PinnableSlice* value) override;
-
+  // 事务模式下的 Get 接口
   Status Get(const ReadOptions& options, const Slice& key,
              std::string* value) override {
     return Get(options, db_->DefaultColumnFamily(), key, value);

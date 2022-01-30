@@ -35,7 +35,7 @@ struct TrackedKeyInfo {
 };
 
 using TrackedKeyInfos = std::unordered_map<std::string, TrackedKeyInfo>;
-
+// 每一个cf 维护一个 TrackedKeyInfos 的unordered_map，其中保存这个cf 追踪的key 以及 其 TrackedKeyInfo信息
 using TrackedKeys = std::unordered_map<ColumnFamilyId, TrackedKeyInfos>;
 
 // Tracks point locks on single keys.

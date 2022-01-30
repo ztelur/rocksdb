@@ -39,6 +39,7 @@ class TransactionUtil {
   //
   // Returns OK on success, BUSY if there is a conflicting write, or other error
   // status for any unexpected errors.
+  // 注意，这里是最后两个参数是有默认值的
   static Status CheckKeyForConflicts(
       DBImpl* db_impl, ColumnFamilyHandle* column_family,
       const std::string& key, SequenceNumber snap_seq,
