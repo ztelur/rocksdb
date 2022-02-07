@@ -131,7 +131,14 @@ class FileIndexer {
     // because 60 is greater than 58. LB = 1, RB = 2.
     // A key 70, compared to be larger than 60. 1st and 2nd file can be skipped
     // according to rule (3). LB = 2, RB = 2.
-
+    /**
+     * 1. user_key < smallest_key
+smallest_lb=1 查找的file_range [0,1]，如果F1的文件编号就是0，那smallest_lb 也就是0了。
+2. user_key > smallest_key && user_key < largest_key
+smallest_rb=2;largest_lb=4 查找的file_range [2,4]，也就是在smallest_rb和largest_lb之间
+3. user_key > largest_key
+largest_rb=5, 查找的file_range 会在[6,7]之间
+     */
 
     //
     // Point to a left most file in a lower level that may contain a key,

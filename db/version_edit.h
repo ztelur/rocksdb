@@ -160,9 +160,11 @@ struct FileSampledStats {
   // number of user reads to this file.
   mutable std::atomic<uint64_t> num_reads_sampled;
 };
-
+// 对于LSM-tree来说，生成的每一个sst文件都会在内存中维护一个FileMeta，存放在这个sst对应的version之中
 struct FileMetaData {
+  // 对应的文件
   FileDescriptor fd;
+  // 所以FileMeta中只需要保存关键的smallest和largest即可，这两个变量也是我们文件查找过程的关键。
   InternalKey smallest;            // Smallest internal key served by table
   InternalKey largest;             // Largest internal key served by table
 
@@ -293,6 +295,7 @@ struct FileMetaData {
 struct FdWithKeyRange {
   FileDescriptor fd;
   FileMetaData* file_metadata;  // Point to all metadata
+  // 从 file_metadata 中获取的最大和最小值
   Slice smallest_key;    // slice that contain smallest key
   Slice largest_key;     // slice that contain largest key
 

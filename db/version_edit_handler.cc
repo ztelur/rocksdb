@@ -774,6 +774,7 @@ Status VersionEditHandlerPointInTime::MaybeCreateVersion(
                                 version_set_->current_version_number_++);
     s = builder->SaveTo(version->storage_info());
     if (s.ok()) {
+      // 成功之后，调用 PrepareApply 来进行初始化，比如 FileIndexer 等
       version->PrepareApply(
           *cfd->GetLatestMutableCFOptions(),
           !version_set_->db_options_->skip_stats_update_on_db_open);

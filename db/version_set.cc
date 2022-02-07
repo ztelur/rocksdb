@@ -76,6 +76,7 @@ int FindFileInRange(const InternalKeyComparator& icmp,
     const Slice& key,
     uint32_t left,
     uint32_t right) {
+  // 使用预先生成的 FdWithKeyRange 来进行二分查找
   auto cmp = [&](const FdWithKeyRange& f, const Slice& k) -> bool {
     return icmp.InternalKeyComparator::Compare(f.largest_key, k) < 0;
   };
@@ -197,6 +198,7 @@ class FilePicker {
                  user_comparator_->CompareWithoutTimestamp(
                      user_key_, ExtractUserKey(f->smallest_key)) <= 0);
           // 使用 FileIndexer 来判断是否在 sst table 中
+          // 这里使用 FileMeta 数据
           int cmp_smallest = user_comparator_->CompareWithoutTimestamp(
               user_key_, ExtractUserKey(f->smallest_key));
           if (cmp_smallest >= 0) {
@@ -276,6 +278,7 @@ class FilePicker {
 
   // Setup local variables to search next level.
   // Returns false if there are no more levels to search.
+  // 初始化 curr_file_level_ 成员变量
   bool PrepareNextLevel() {
     curr_level_++;
     while (curr_level_ < num_levels_) {
@@ -787,7 +790,7 @@ int FindFile(const InternalKeyComparator& icmp,
   return FindFileInRange(icmp, file_level, key, 0,
                          static_cast<uint32_t>(file_level.num_files));
 }
-
+// 构造从 FileMetaData 中构建简略的 信息
 void DoGenerateLevelFilesBrief(LevelFilesBrief* file_level,
         const std::vector<FileMetaData*>& files,
         Arena* arena) {
@@ -809,7 +812,7 @@ void DoGenerateLevelFilesBrief(LevelFilesBrief* file_level,
     mem = arena->AllocateAligned(smallest_size + largest_size);
     memcpy(mem, smallest_key.data(), smallest_size);
     memcpy(mem + smallest_size, largest_key.data(), largest_size);
-
+    // 将 FileMetaData 中的相关信息加入到 FdWithKeyRange 中
     FdWithKeyRange& f = file_level->files[i];
     f.fd = files[i]->fd;
     f.file_metadata = files[i];
@@ -1113,6 +1116,7 @@ void LevelIterator::Seek(const Slice& target) {
 }
 
 void LevelIterator::SeekForPrev(const Slice& target) {
+  // 先找到对应的文件 index
   size_t new_file_index = FindFile(icomparator_, *flevel_, target);
   if (new_file_index >= flevel_->num_files) {
     new_file_index = flevel_->num_files - 1;
@@ -1983,7 +1987,7 @@ void Version::MultiGetBlob(
     }
   }
 }
-// 从 sstable 中读取
+// 这是 Version 的实现 从 sstable 中读取
 void Version::Get(const ReadOptions& read_options, const LookupKey& k,
                   PinnableSlice* value, std::string* timestamp, Status* status,
                   MergeContext* merge_context,
@@ -2429,6 +2433,8 @@ void VersionStorageInfo::GenerateLevelFilesBrief() {
   }
 }
 
+// DB重启，Recover的时候调用Version::PrepareApply 来进行构造，会提前构建注入 FileIndex, LevelFileBrief 等缓存数据
+// flush 和 compaction 后也会调用该接口
 void Version::PrepareApply(
     const MutableCFOptions& mutable_cf_options,
     bool update_stats) {
@@ -4497,7 +4503,11 @@ Status VersionSet::ProcessManifestWrites(
     if (s.ok()) {
       if (!first_writer.edit_list.front()->IsColumnFamilyManipulation()) {
         for (int i = 0; i < static_cast<int>(versions.size()); ++i) {
-          versions[i]->PrepareApply(*mutable_cf_options_ptrs[i], true);
+          versions[i]->
+
+
+
+              PrepareApply(*mutable_cf_options_ptrs[i], true);
         }
       }
 

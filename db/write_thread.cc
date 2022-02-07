@@ -15,6 +15,7 @@
 namespace ROCKSDB_NAMESPACE {
 
 WriteThread::WriteThread(const ImmutableDBOptions& db_options)
+    // 可以根据 options 进行配置
     : max_yield_usec_(db_options.enable_write_thread_adaptive_yield
                           ? db_options.write_thread_max_yield_usec
                           : 0),
@@ -59,6 +60,17 @@ uint8_t WriteThread::BlockingAwaitState(Writer* w, uint8_t goal_mask) {
   return state;
 }
 
+/**
+ * 进行了优化
+ * 所以Rocksdb 将pthread_cond_wait 优化为了如下三步：
+ * Busy Loop with pause
+ * Short wait – SOMETIMES busy Loop with yield loop到long-wait之间的线程等待优化的
+ * Long wait – Blocking Wait
+ * @param w
+ * @param goal_mask
+ * @param ctx
+ * @return
+ */
 uint8_t WriteThread::AwaitState(Writer* w, uint8_t goal_mask,
                                 AdaptationContext* ctx) {
   uint8_t state = 0;
@@ -71,11 +83,21 @@ uint8_t WriteThread::AwaitState(Writer* w, uint8_t goal_mask,
   // is the effect of the pause instruction), so 200 iterations is a bit
   // more than a microsecond.  This is long enough that waits longer than
   // this can amortize the cost of accessing the clock and yielding.
+  /**
+   * 线程循环忙等待一段时间，在至强(xeon)CPU下，一次循环大概需要7ns，而这里会忙等待200次，总共超过1us的时间。
+   * 这段时间足够Leader的writer 完成WriteBatch的写入，而且这个时间忙等会让follower线程占用CPU，
+   * 并不会发生context switch。这里相比于leveldb的pthread_cond_wait上下文消耗的10us量级来说已经小了很多
+   */
   for (uint32_t tries = 0; tries < 200; ++tries) {
     state = w->state.load(std::memory_order_acquire);
     if ((state & goal_mask) != 0) {
       return state;
     }
+    /**
+     * 主要是用来提升spin-wait-loop的性能，一般CPU执行spin-wait在循环退出的时候检测指令的内存序发生变化会重排指令流水线，
+     * 从而造成性能损失。而pause指令则能够告诉CPU 进程当前处于spin-wait状态，
+     * 这个时候能够避免CPU流水线的指令重排，从而能够减少性能的损失。
+     */
     port::AsmVolatilePause();
   }
 
@@ -138,10 +160,27 @@ uint8_t WriteThread::AwaitState(Writer* w, uint8_t goal_mask,
   // The samling base for updating the yeild credit. The sampling rate would be
   // 1/sampling_base.
   const int sampling_base = 256;
+  // 进行 Short-Wait
 
+  /**
+   * 开始的Loop中一样判断state是否满足条件，如果满足则退出循环。state不满足条件的话通过
+   * std::this_thread::yield();能够将剩下的时间片交给其他的线程执行。当下一次循环时需要执行state.load的时候再次抢占CPU的时间片。
+   * 不过这个循环并不是无限执行的，会执行max_yield_usec_(us)， 这个max_yield_usec_参数是通过外部的两个option指定的，
+   * 如果enable_write_thread_adaptive_yield为真，则将write_thread_max_yield_usec设置为执行的时间，
+   * 否则设置为0。所以这里循环的默认执行时间是100us。
+   */
   if (max_yield_usec_ > 0) {
+    // 判断是否要直接进入 long-wait 阶段
     update_ctx = Random::GetTLSInstance()->OneIn(sampling_base);
 
+    /**
+     * 这里通过随机函数 的OneIn来判断，sampling_base是256，则这里有255/256概率是为true的 ，
+     * 或者
+     *
+     *
+     * 判断yield_credit是否>0，针对yield_credit的更新则是通过判断short-wait 阶段中是否满足了条件，
+     * 满足的话则让yield_credit+1， 如果short-wait不满足，则会-1。也就是只要short-wait的时间能够持续满足state的条件，那么每次的执行大多数都会集中到short-wait中
+     */
     if (update_ctx || yield_credit.load(std::memory_order_relaxed) >= 0) {
       // we're updating the adaptation statistics, or spinning has >
       // 50% chance of being shorter than max_yield_usec_ and causing no
@@ -153,11 +192,17 @@ uint8_t WriteThread::AwaitState(Writer* w, uint8_t goal_mask,
       size_t slow_yield_count = 0;
 
       auto iter_begin = spin_begin;
+      // 统计等待的时间
+      // 只会执行 循环并不是无限执行的，会执行max_yield_usec_(us)
       while ((iter_begin - spin_begin) <=
              std::chrono::microseconds(max_yield_usec_)) {
+        // 让出时间片
         std::this_thread::yield();
 
+        // 执行state.load的时候再次抢占CPU的时间片
         state = w->state.load(std::memory_order_acquire);
+        // // 抢占时间片
+        //				// state满足条件，则跳出循环
         if ((state & goal_mask) != 0) {
           // success
           would_spin_again = true;
@@ -174,6 +219,10 @@ uint8_t WriteThread::AwaitState(Writer* w, uint8_t goal_mask,
             // Not just one ivcsw, but several.  Immediately update yield_credit
             // and fall back to blocking
             update_ctx = true;
+            /**
+             * 主要就是判断yield的执行时间来判断，如果当前循环让出的时间片超过db_options.write_thread_slow_yield_usec也就是slow_yield_usec_的3us，
+             * 且连续超过3次，则认为当前等待满足state的时间过久，需要切换到 Long-wait了。
+             */
             break;
           }
         }
@@ -181,9 +230,10 @@ uint8_t WriteThread::AwaitState(Writer* w, uint8_t goal_mask,
       }
     }
   }
-
+//   // 如果前两个等待阶段都没有满足state的状态变更，那么就只能进入和leveldb逻辑一样的long-wait阶段了，通过cond.Wait来长等
   if ((state & goal_mask) == 0) {
     TEST_SYNC_POINT_CALLBACK("WriteThread::AwaitState:BlockingWaiting", w);
+    // BlockingAwaitState 会调用 cond.Wait 进行等待
     state = BlockingAwaitState(w, goal_mask);
   }
 
