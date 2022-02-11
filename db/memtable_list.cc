@@ -327,6 +327,7 @@ bool MemTableListVersion::TrimHistory(autovector<MemTable*>* to_delete,
 
 // Returns true if there is at least one memtable on which flush has
 // not yet started.
+// 至少有一个memtable需要被flush.而MemTableList这个类则是保存了所有的immutable memtables.
 bool MemTableList::IsFlushPending() const {
   if ((flush_requested_ && num_flush_not_started_ > 0) ||
       (num_flush_not_started_ >= min_write_buffer_number_to_merge_)) {

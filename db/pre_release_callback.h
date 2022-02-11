@@ -13,7 +13,8 @@ namespace ROCKSDB_NAMESPACE {
 class PreReleaseCallback {
  public:
   virtual ~PreReleaseCallback() {}
-
+  // 在写入 WAL 后和写入 memtable 前调用。
+  // 在 write 对其他 reader 可见前可以做一些操作。
   // Will be called while on the write thread after the write to the WAL and
   // before the write to memtable. This is useful if any operation needs to be
   // done before the write gets visible to the readers, or if we want to reduce

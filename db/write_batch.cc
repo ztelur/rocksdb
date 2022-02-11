@@ -450,7 +450,7 @@ Status WriteBatch::Iterate(Handler* handler) const {
   return WriteBatchInternal::Iterate(this, handler, WriteBatchInternal::kHeader,
                                      rep_.size());
 }
-
+// 写入 memtable时会调用该函数
 Status WriteBatchInternal::Iterate(const WriteBatch* wb,
                                    WriteBatch::Handler* handler, size_t begin,
                                    size_t end) {
@@ -474,6 +474,7 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
   uint32_t column_family = 0;  // default
   bool last_was_try_again = false;
   bool handler_continue = true;
+  // 进行写入操作
   while (((s.ok() && !input.empty()) || UNLIKELY(s.IsTryAgain()))) {
     handler_continue = handler->Continue();
     if (!handler_continue) {
@@ -484,7 +485,7 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
       last_was_try_again = false;
       tag = 0;
       column_family = 0;  // default
-
+      // 从 batch 中读取 tag 的值，也就是当前名称要进行操作的类型，比如 put，delete等。
       s = ReadRecordFromWriteBatch(&input, &tag, &column_family, &key, &value,
                                    &blob, &xid);
       if (!s.ok()) {
@@ -501,12 +502,13 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
       last_was_try_again = true;
       s = Status::OK();
     }
-
+    // 根据不同的 tag，也就是命令原语，进行不同的操作
     switch (tag) {
       case kTypeColumnFamilyValue:
       case kTypeValue:
         assert(wb->content_flags_.load(std::memory_order_relaxed) &
                (ContentFlags::DEFERRED | ContentFlags::HAS_PUT));
+        // 调用 handler 的 PutCF 函数。
         s = handler->PutCF(column_family, key, value);
         if (LIKELY(s.ok())) {
           empty_batch = false;
@@ -1495,18 +1497,20 @@ class MemTableInserter : public WriteBatch::Handler {
       return ret_status;
     }
     assert(ret_status.ok());
-
+    // 从 cf 的memms 中获取到 MemTable 抽象
     MemTable* mem = cf_mems_->GetMemTable();
     auto* moptions = mem->GetImmutableMemTableOptions();
     // inplace_update_support is inconsistent with snapshots, and therefore with
     // any kind of transactions including the ones that use seq_per_batch
     assert(!seq_per_batch_ || !moptions->inplace_update_support);
     if (!moptions->inplace_update_support) {
+      // 如果不支持 inplace_update support 则直接添加
       ret_status =
           mem->Add(sequence_, value_type, key, value, kv_prot_info,
                    concurrent_memtable_writes_, get_post_process_info(mem),
                    hint_per_batch_ ? &GetHintMap()[mem] : nullptr);
     } else if (moptions->inplace_callback == nullptr) {
+      // 如果底层的 memtable 实现支持，则调用这个。
       assert(!concurrent_memtable_writes_);
       ret_status = mem->Update(sequence_, key, value, kv_prot_info);
     } else {
@@ -2342,10 +2346,12 @@ Status WriteBatchInternal::InsertInto(
   SetSequence(writer->batch, sequence);
   inserter.set_log_number_ref(writer->log_ref);
   inserter.set_prot_info(writer->batch->prot_info_.get());
+  // 进行执行
   Status s = writer->batch->Iterate(&inserter);
   assert(!seq_per_batch || batch_cnt != 0);
   assert(!seq_per_batch || inserter.sequence() - sequence == batch_cnt);
   if (concurrent_memtable_writes) {
+    // 如果是并发写入，则需要进行 post process 操作
     inserter.PostProcess();
   }
   return s;

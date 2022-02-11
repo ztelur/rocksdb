@@ -121,6 +121,7 @@ class WriteThread {
     size_t batch_cnt;  // if non-zero, number of sub-batches in the write batch
     size_t protection_bytes_per_key;
     PreReleaseCallback* pre_release_callback;
+    // 写入的 wal 日志的number
     uint64_t log_used;  // log number that this batch was inserted into
     uint64_t log_ref;   // log number that memtable insert should reference
     WriteCallback* callback;
@@ -372,6 +373,7 @@ class WriteThread {
 
   // Points to the newest pending writer. Only leader can remove
   // elements, adding can be done lock-free by anybody.
+  // 指向最新的 pending writer，只有 leader 可以删除，其他人可以lock-free 添加
   std::atomic<Writer*> newest_writer_;
 
   // Points to the newest pending memtable writer. Used only when pipelined

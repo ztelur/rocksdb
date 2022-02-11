@@ -300,12 +300,15 @@ bool WriteThread::LinkOne(Writer* w, std::atomic<Writer*>* newest_writer) {
       }
       // Since no_slowdown is false, wait here to be notified of the write
       // stall clearing
+      // 不立刻返回，则进入等待状态，等到 write stall 标记清除时接受到响应
       {
         MutexLock lock(&stall_mu_);
+        // 加锁后重新再次校验
         writers = newest_writer->load(std::memory_order_relaxed);
         if (writers == &write_stall_dummy_) {
           TEST_SYNC_POINT_CALLBACK("WriteThread::WriteStall::Wait", w);
           stall_cv_.Wait();
+          // 从阻塞恢复后重新开始
           // Load newest_writers_ again since it may have changed
           writers = newest_writer->load(std::memory_order_relaxed);
           continue;
@@ -345,7 +348,7 @@ bool WriteThread::LinkGroup(WriteGroup& write_group,
     }
   }
 }
-
+// 这里注意到遍历是通过link_newer进行的，之所以这样做是相当于在写入WAL之前，对于当前leader的Write 做一次snapshot(通过CreateMissingNewerLinks函数).
 void WriteThread::CreateMissingNewerLinks(Writer* head) {
   while (true) {
     Writer* next = head->link_older;
@@ -353,6 +356,7 @@ void WriteThread::CreateMissingNewerLinks(Writer* head) {
       assert(next == nullptr || next->link_newer == head);
       break;
     }
+    // 将双向关系构建起来，本来是单向的
     next->link_newer = head;
     head = next;
   }
@@ -383,7 +387,7 @@ void WriteThread::CompleteLeader(WriteGroup& write_group) {
   write_group.size -= 1;
   SetState(leader, STATE_COMPLETED);
 }
-
+// 将 writer 的状态设置为 complete，并且从 writer 链中删除掉
 void WriteThread::CompleteFollower(Writer* w, WriteGroup& write_group) {
   assert(write_group.size > 1);
   assert(w != write_group.leader);
@@ -521,11 +525,15 @@ size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
   if (size <= min_batch_size_bytes) {
     max_size = size + min_batch_size_bytes;
   }
+  // 先计算出来一次 batch 所允许的最大数量
 
+  // 将构造出来的新的 write_group 和 leader writer 进行绑定
   leader->write_group = write_group;
   write_group->leader = leader;
   write_group->last_writer = leader;
   write_group->size = 1;
+
+  // 获取 newest_writer 最新值
   Writer* newest_writer = newest_writer_.load(std::memory_order_acquire);
 
   // This is safe regardless of any db mutex status of the caller. Previous
@@ -533,6 +541,7 @@ size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
   // (they emptied the list and then we added ourself as leader) or had to
   // explicitly wake us up (the list was non-empty when we added ourself,
   // so we have already received our MarkJoined).
+  // 构建双向关系
   CreateMissingNewerLinks(newest_writer);
 
   // Tricky. Iteration start (leader) is exclusive and finish
@@ -543,7 +552,7 @@ size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
   while (w != newest_writer) {
     assert(w->link_newer);
     w = w->link_newer;
-
+    // 从当前一直遍历到writer结尾，判断一些不能并发写入的场景
     if (w->sync && !leader->sync) {
       // Do not include a sync write into a batch handled by a non-sync write.
       break;
@@ -578,11 +587,12 @@ size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
     }
 
     auto batch_size = WriteBatchInternal::ByteSize(w->batch);
+    // 再次判断相加是否超过一次 batch 的大小
     if (size + batch_size > max_size) {
       // Do not make batch too big
       break;
     }
-
+    // 加入到 write_group
     w->write_group = write_group;
     size += batch_size;
     write_group->last_writer = w;
@@ -696,6 +706,7 @@ void WriteThread::LaunchParallelMemTableWriters(WriteGroup* write_group) {
 
 static WriteThread::AdaptationContext cpmtw_ctx("CompleteParallelMemTableWriter");
 // This method is called by both the leader and parallel followers
+// leader 和 followers 都会调用这个函数，用来判断是否要退出 parallel
 bool WriteThread::CompleteParallelMemTableWriter(Writer* w) {
 
   auto* write_group = w->write_group;
@@ -703,7 +714,7 @@ bool WriteThread::CompleteParallelMemTableWriter(Writer* w) {
     std::lock_guard<std::mutex> guard(write_group->leader->StateMutex());
     write_group->status = w->status;
   }
-
+  // 将run 减 1，然后判断是否大于1，说明还有未完成的，所以进行等待
   if (write_group->running-- > 1) {
     // we're not the last one
     AwaitState(w, STATE_COMPLETED, &cpmtw_ctx);
@@ -724,6 +735,7 @@ void WriteThread::ExitAsBatchGroupFollower(Writer* w) {
   ExitAsBatchGroupLeader(*write_group, write_group->status);
   assert(w->status.ok());
   assert(w->state == STATE_COMPLETED);
+  // 设置leader的状态为完成
   SetState(write_group->leader, STATE_COMPLETED);
 }
 
@@ -756,6 +768,7 @@ void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
       w->status = status;
       // 如果不需要写入 memtable，比如禁用掉 memtable 的场景，则调用 complteteFollower
       if (!w->ShouldWriteToMemtable()) {
+        // 通知 follower，结束了
         CompleteFollower(w, write_group);
       }
       w = next;
@@ -776,7 +789,7 @@ void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
     if (!has_dummy) {
       // We find at least one pending writer when we insert dummy. We search
       // for next leader from there.
-      // 找到下一个 leader
+      // 找到下一个 leader，将其设置成 leader
       next_leader = FindNextLeader(expected, last_writer);
       assert(next_leader != nullptr && next_leader != last_writer);
     }

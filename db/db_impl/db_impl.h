@@ -343,6 +343,7 @@ class DBImpl : public DB {
   using DB::Flush;
   virtual Status Flush(const FlushOptions& options,
                        ColumnFamilyHandle* column_family) override;
+  // 进行 flush 操作
   virtual Status Flush(
       const FlushOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_families) override;
@@ -1173,6 +1174,7 @@ class DBImpl : public DB {
   // WriteToWAL need different synchronization: log_empty_, alive_log_files_,
   // logs_, logfile_number_. Refer to the definition of each variable below for
   // more description.
+  // 因为可能有两个 two_write_queues，所以有一些变量需要保护
   mutable InstrumentedMutex mutex_;
 
   ColumnFamilyHandleImpl* default_cf_handle_;
@@ -2039,6 +2041,7 @@ class DBImpl : public DB {
   // must be under either mutex_ or log_write_mutex_. Since after ::Open,
   // logfile_number_ is currently updated only in write_thread_, it can be read
   // from the same write_thread_ without any locks.
+  // wal log number
   uint64_t logfile_number_;
   std::deque<uint64_t>
       log_recycle_files_;  // a list of log files that we can recycle
@@ -2156,6 +2159,7 @@ class DBImpl : public DB {
   // in MaybeScheduleFlushOrCompaction()
   // invariant(column family present in flush_queue_ <==>
   // ColumnFamilyData::pending_flush_ == true)
+  // 将会保存所有的将要被flush到磁盘的ColumnFamily.只有当当前的ColumnFamily满足flush条件（cfd->imm()->IsFlushPending()）才会将此CF加入到flush队列
   std::deque<FlushRequest> flush_queue_;
   // invariant(column family present in compaction_queue_ <==>
   // ColumnFamilyData::pending_compaction_ == true)

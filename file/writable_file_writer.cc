@@ -56,6 +56,7 @@ IOStatus WritableFileWriter::Append(const Slice& data,
   }
 
   // See whether we need to enlarge the buffer to avoid the flush
+  // 判断是否需要扩充 buf_
   if (buf_.Capacity() - buf_.CurrentSize() < left) {
     for (size_t cap = buf_.Capacity();
          cap < max_buffer_size_;  // There is still room to increase

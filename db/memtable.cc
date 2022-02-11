@@ -151,6 +151,7 @@ size_t MemTable::ApproximateMemoryUsage() {
 }
 
 bool MemTable::ShouldFlushNow() {
+  // 加载获取 write_buffer_size_ 的大小。
   size_t write_buffer_size = write_buffer_size_.load(std::memory_order_relaxed);
   // In a lot of times, we cannot allocate arena blocks that exactly matches the
   // buffer size. Thus we have to decide if we should over-allocate or
@@ -545,13 +546,17 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   uint32_t key_size = static_cast<uint32_t>(key.size());
   uint32_t val_size = static_cast<uint32_t>(value.size());
   uint32_t internal_key_size = key_size + 8;
+  // 计算合并后的长度
   const uint32_t encoded_len = VarintLength(internal_key_size) +
                                internal_key_size + VarintLength(val_size) +
                                val_size;
   char* buf = nullptr;
+  // 如果是 range delete 类型的操作，则这里选择特殊的 range_del_table 树
   std::unique_ptr<MemTableRep>& table =
       type == kTypeRangeDeletion ? range_del_table_ : table_;
+  // 分配对应的 Key 内存
   KeyHandle handle = table->Allocate(encoded_len, &buf);
+
   // 进行对应的拷贝
   char* p = EncodeVarint32(buf, internal_key_size);
   // 拷贝 key 数据
@@ -573,8 +578,9 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
       return status;
     }
   }
-
+  // 获取 timestamp 的 size
   size_t ts_sz = GetInternalKeyComparator().user_comparator()->timestamp_size();
+  // 不包括 ts 的 key
   Slice key_without_ts = StripTimestampFromUserKey(key, ts_sz);
   // 是否允许并发插入
   if (!allow_concurrent) {
@@ -587,6 +593,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
         return Status::TryAgain("key+seq exists");
       }
     } else {
+      // 一般进入到这个分支来
       bool res = table->InsertKey(handle);
       if (UNLIKELY(!res)) {
         return Status::TryAgain("key+seq exists");
@@ -600,10 +607,11 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
     data_size_.store(data_size_.load(std::memory_order_relaxed) + encoded_len,
                      std::memory_order_relaxed);
     if (type == kTypeDeletion) {
+      // 如果是 delete 操作记录其他的数据
       num_deletes_.store(num_deletes_.load(std::memory_order_relaxed) + 1,
                          std::memory_order_relaxed);
     }
-
+    // 记录 bloom filter
     if (bloom_filter_ && prefix_extractor_ &&
         prefix_extractor_->InDomain(key_without_ts)) {
       bloom_filter_->Add(prefix_extractor_->Transform(key_without_ts));
@@ -624,6 +632,7 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
       assert(first_seqno_.load() >= earliest_seqno_.load());
     }
     assert(post_process_info == nullptr);
+    // 写入成功后，需要检查 memtable 的大小，看看是否会触发 flush
     UpdateFlushState();
   } else {
     // 调用对应的接口进行并发插入，比如说 skipList 应该会到该分支

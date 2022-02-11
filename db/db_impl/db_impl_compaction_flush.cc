@@ -146,7 +146,7 @@ IOStatus DBImpl::SyncClosedLogs(JobContext* job_context) {
   TEST_SYNC_POINT("DBImpl::SyncClosedLogs:end");
   return io_s;
 }
-
+// 真正进行 flush 的地方
 Status DBImpl::FlushMemTableToOutputFile(
     ColumnFamilyData* cfd, const MutableCFOptions& mutable_cf_options,
     bool* made_progress, JobContext* job_context,
@@ -337,7 +337,7 @@ Status DBImpl::FlushMemTableToOutputFile(
   TEST_SYNC_POINT("DBImpl::FlushMemTableToOutputFile:Finish");
   return s;
 }
-
+// Flush时的操作，将 Memtable 写入到 ssttable 中。
 Status DBImpl::FlushMemTablesToOutputFiles(
     const autovector<BGFlushArg>& bg_flush_args, bool* made_progress,
     JobContext* job_context, LogBuffer* log_buffer, Env::Priority thread_pri) {
@@ -1701,11 +1701,13 @@ Status DBImpl::Flush(const FlushOptions& flush_options,
                  cfh->GetName().c_str(), s.ToString().c_str());
   return s;
 }
-
+// 进行flush，将数据从 memtable 写入到 sstable，当然先搞成 imm memtable 然后在后台进行处理
 Status DBImpl::Flush(const FlushOptions& flush_options,
                      const std::vector<ColumnFamilyHandle*>& column_families) {
   Status s;
+  // 如果不是 atomic_flush 的操作
   if (!immutable_db_options_.atomic_flush) {
+    // 每个 cf 都要进行 flush
     for (auto cfh : column_families) {
       s = Flush(flush_options, cfh);
       if (!s.ok()) {
@@ -1713,6 +1715,7 @@ Status DBImpl::Flush(const FlushOptions& flush_options,
       }
     }
   } else {
+    // 进行原子操作
     ROCKS_LOG_INFO(immutable_db_options_.info_log,
                    "Manual atomic flush start.\n"
                    "=====Column families:=====");
@@ -1976,7 +1979,7 @@ Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
       // retry resume, it is possible that in some CFs,
       // cfd->imm()->NumNotFlushed() = 0. In this case, so no flush request will
       // be created and scheduled, status::OK() will be returned.
-      // 进行 mem table 切换
+      // 进行 mem table 切换 调用 swtich mem table 进行切换。
       s = SwitchMemtable(cfd, &context);
     }
     const uint64_t flush_memtable_id = port::kMaxUint64;
@@ -2355,6 +2358,7 @@ void DBImpl::EnableManualCompaction() {
   manual_compaction_paused_.fetch_sub(1, std::memory_order_release);
 }
 
+// 判断是否需要规划进行 Flush 或者 Compaction
 // 自动进行 compaction
 // 在切换wal（SwitchWAL）或者write_buffer(memtable)满的时候被调用
 void DBImpl::MaybeScheduleFlushOrCompaction() {
@@ -2387,6 +2391,7 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     FlushThreadArg* fta = new FlushThreadArg;
     fta->db_ = this;
     fta->thread_pri_ = Env::Priority::HIGH;
+    // 触发一个 BGWorkFlush 也就是说需要进行 flush
     env_->Schedule(&DBImpl::BGWorkFlush, fta, Env::Priority::HIGH, this,
                    &DBImpl::UnscheduleFlushCallback);
     --unscheduled_flushes_;
@@ -2539,7 +2544,7 @@ ColumnFamilyData* DBImpl::PickCompactionFromQueue(
   }
   return cfd;
 }
-
+// 用来提交flush，添加到 flush_queue_。
 void DBImpl::SchedulePendingFlush(const FlushRequest& flush_req,
                                   FlushReason flush_reason) {
   mutex_.AssertHeld();
@@ -2568,6 +2573,7 @@ void DBImpl::SchedulePendingFlush(const FlushRequest& flush_req,
       cfd->set_queued_for_flush(true);
       cfd->SetFlushReason(flush_reason);
       ++unscheduled_flushes_;
+      // 将这个添加到 flush_queue_中
       flush_queue_.push_back(flush_req);
     }
   } else {
@@ -2598,7 +2604,7 @@ void DBImpl::SchedulePendingPurge(std::string fname, std::string dir_to_sync,
   PurgeFileInfo file_info(fname, dir_to_sync, type, number, job_id);
   purge_files_.insert({{number, std::move(file_info)}});
 }
-
+// 会有一个线程专门调用这个 BGWorkFlush
 void DBImpl::BGWorkFlush(void* arg) {
   FlushThreadArg fta = *(reinterpret_cast<FlushThreadArg*>(arg));
   delete reinterpret_cast<FlushThreadArg*>(arg);
@@ -2672,7 +2678,8 @@ void DBImpl::UnscheduleFlushCallback(void* arg) {
   delete reinterpret_cast<FlushThreadArg*>(arg);
   TEST_SYNC_POINT("DBImpl::UnscheduleFlushCallback");
 }
-
+// 这个会有一个 这个后台线程叫做BGWorkFlush，最终这个函数会调用BackgroundFlush函数
+// BackgroundFlush主要功能是在flush_queue_中找到一个ColumnFamily然后刷新它的memtable到磁盘.
 Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
                                LogBuffer* log_buffer, FlushReason* reason,
                                Env::Priority thread_pri) {
@@ -2698,8 +2705,10 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
   std::vector<SuperVersionContext>& superversion_contexts =
       job_context->superversion_contexts;
   autovector<ColumnFamilyData*> column_families_not_to_flush;
+  // 依次遍历 flush_queue_ flush_queue_中找到一个ColumnFamily然后刷新它的memtable到磁盘
   while (!flush_queue_.empty()) {
     // This cfd is already referenced
+    // 取出队首的第一个 flush queue
     const FlushRequest& flush_req = PopFirstFromFlushQueue();
     superversion_contexts.clear();
     superversion_contexts.reserve(flush_req.size());
@@ -2717,6 +2726,7 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
         continue;
       }
       superversion_contexts.emplace_back(SuperVersionContext(true));
+      // 加入到需要flush的列表中
       bg_flush_args.emplace_back(cfd, iter.second,
                                  &(superversion_contexts.back()));
     }
@@ -2739,6 +2749,7 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
           bg_job_limits.max_compactions, bg_flush_scheduled_,
           bg_compaction_scheduled_);
     }
+    // 调用 FlushMemTablesToOutputFiles 将数据写入到 OutputFiles 中
     status = FlushMemTablesToOutputFiles(bg_flush_args, made_progress,
                                          job_context, log_buffer, thread_pri);
     TEST_SYNC_POINT("DBImpl::BackgroundFlush:BeforeFlush");
@@ -2777,7 +2788,7 @@ void DBImpl::BackgroundCallFlush(Env::Priority thread_pri) {
         pending_outputs_inserted_elem(new std::list<uint64_t>::iterator(
             CaptureCurrentFileNumberInPendingOutputs()));
     FlushReason reason;
-
+    // 真正调用 BackgroundFlush
     Status s = BackgroundFlush(&made_progress, &job_context, &log_buffer,
                                &reason, thread_pri);
     if (!s.ok() && !s.IsShutdownInProgress() && !s.IsColumnFamilyDropped() &&

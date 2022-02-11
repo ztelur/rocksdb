@@ -815,13 +815,16 @@ template <class Comparator>
 template <bool UseCAS>
 bool InlineSkipList<Comparator>::Insert(const char* key, Splice* splice,
                                         bool allow_partial_splice_fix) {
+  // 生成一个 node
   Node* x = reinterpret_cast<Node*>(const_cast<char*>(key)) - 1;
   // 获取解析后的 key，因为之前将 key 和 value 进行合并了
   const DecodedKey key_decoded = compare_.decode_key(key);
   int height = x->UnstashHeight();
   assert(height >= 1 && height <= kMaxHeight_);
 
+  // 获取的最大的 height
   int max_height = max_height_.load(std::memory_order_relaxed);
+  // 如果
   while (height > max_height) {
     if (max_height_.compare_exchange_weak(max_height, height)) {
       // successfully updated it

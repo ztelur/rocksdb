@@ -53,6 +53,7 @@ IOStatus Writer::AddRecord(const Slice& slice) {
   size_t left = slice.size();
 
   // Header size varies depending on whether we are recycling or not.
+  // 要根据是否重复使用 log files 来判断不同的 header size
   const int header_size =
       recycle_log_files_ ? kRecyclableHeaderSize : kHeaderSize;
 
@@ -65,9 +66,10 @@ IOStatus Writer::AddRecord(const Slice& slice) {
     // 计算 block 剩下的大小
     const int64_t leftover = kBlockSize - block_offset_;
     assert(leftover >= 0);
-    // 如果不够，
+    // 如果小于 header_size, 则需要切换到一个新的 block 上。
     if (leftover < header_size) {
       // Switch to a new block
+      // 如果此时还有剩余的，则进行数据填充。因为一定是小于 header_size 的，所以直接填充
       if (leftover > 0) {
         // Fill the trailer (literal below relies on kHeaderSize and
         // kRecyclableHeaderSize being <= 11)
@@ -79,35 +81,43 @@ IOStatus Writer::AddRecord(const Slice& slice) {
           break;
         }
       }
+      // 重置
       block_offset_ = 0;
     }
 
     // Invariant: we never leave < header_size bytes in a block.
     assert(static_cast<int64_t>(kBlockSize - block_offset_) >= header_size);
-
+    // 计算除了写入 header_size 外，还剩下多少空间
     const size_t avail = kBlockSize - block_offset_ - header_size;
+    // 判断是否足够写入空间
     const size_t fragment_length = (left < avail) ? left : avail;
-
+    // 计算 wal record type
     RecordType type;
     const bool end = (left == fragment_length);
     // 计算类型，是full，还是first，还是last，还是 midle
     if (begin && end) {
+      // 应该是 FULL 类型
       type = recycle_log_files_ ? kRecyclableFullType : kFullType;
     } else if (begin) {
+      // 只有 begin 没有 end 则是 FIRST 类型
       type = recycle_log_files_ ? kRecyclableFirstType : kFirstType;
     } else if (end) {
+      // 只有 end 则是 Last
       type = recycle_log_files_ ? kRecyclableLastType : kLastType;
     } else {
+      // 否则就是中间
       type = recycle_log_files_ ? kRecyclableMiddleType : kMiddleType;
     }
     // 进行写入
     s = EmitPhysicalRecord(type, ptr, fragment_length);
     ptr += fragment_length;
+    // 减少 left 剩下的未写入的数据
     left -= fragment_length;
     begin = false;
   } while (s.ok() && left > 0);
 
   if (s.ok()) {
+    // 如果是true，则并不每次写入都flush，而是以来上层的 WriteBuffer
     if (!manual_flush_) {
       s = dest_->Flush();
     }
@@ -123,12 +133,12 @@ IOStatus Writer::EmitPhysicalRecord(RecordType t, const char* ptr, size_t n) {
 
   size_t header_size;
   char buf[kRecyclableHeaderSize];
-
-  // Format the header
+  // CRC 4B SIZE 2B Type 1B Payload
+  // Format the header 构造 record header
   buf[4] = static_cast<char>(n & 0xff);
   buf[5] = static_cast<char>(n >> 8);
   buf[6] = static_cast<char>(t);
-
+  // 把类型的 crc 缓存起来，不用一直计算
   uint32_t crc = type_crc_[t];
   if (t < kRecyclableFullType) {
     // Legacy record format
@@ -150,15 +160,19 @@ IOStatus Writer::EmitPhysicalRecord(RecordType t, const char* ptr, size_t n) {
 
   // Compute the crc of the record type and the payload.
   uint32_t payload_crc = crc32c::Value(ptr, n);
+  // 计算 crc
   crc = crc32c::Crc32cCombine(crc, payload_crc, n);
   crc = crc32c::Mask(crc);  // Adjust for storage
   TEST_SYNC_POINT_CALLBACK("LogWriter::EmitPhysicalRecord:BeforeEncodeChecksum",
                            &crc);
+  // 写入 crc 到 buf
   EncodeFixed32(buf, crc);
 
   // Write the header and the payload
+  // 写入 header
   IOStatus s = dest_->Append(Slice(buf, header_size));
   if (s.ok()) {
+    // 写入 payload
     s = dest_->Append(Slice(ptr, n), payload_crc);
   }
   block_offset_ += header_size + n;
