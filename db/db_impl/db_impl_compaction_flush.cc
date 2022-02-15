@@ -180,6 +180,7 @@ Status DBImpl::FlushMemTableToOutputFile(
   uint64_t max_memtable_id = needs_to_sync_closed_wals
                                  ? cfd->imm()->GetLatestMemTableID()
                                  : port::kMaxUint64;
+  // 构造一个 FlushJob，具体的 FLush 是由它来进行
   FlushJob flush_job(
       dbname_, cfd, immutable_db_options_, mutable_cf_options, max_memtable_id,
       file_options_for_compaction_, versions_.get(), &mutex_, &shutting_down_,
@@ -216,6 +217,7 @@ Status DBImpl::FlushMemTableToOutputFile(
   // num_flush_not_started_ needs to be rollback.
   TEST_SYNC_POINT("DBImpl::FlushMemTableToOutputFile:BeforePickMemtables");
   if (s.ok()) {
+    // 挑选需要 flush 的 memtable
     flush_job.PickMemTable();
     need_cancel = true;
   }
@@ -1983,13 +1985,16 @@ Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
       s = SwitchMemtable(cfd, &context);
     }
     const uint64_t flush_memtable_id = port::kMaxUint64;
+
     if (s.ok()) {
       if (cfd->imm()->NumNotFlushed() != 0 || !cfd->mem()->IsEmpty() ||
           !cached_recoverable_state_empty_.load()) {
+        // 如果发现 imm 还有未flush的
         FlushRequest req{{cfd, flush_memtable_id}};
         flush_reqs.emplace_back(std::move(req));
         memtable_ids_to_wait.emplace_back(cfd->imm()->GetLatestMemTableID());
       }
+      // 如果
       if (immutable_db_options_.persist_stats_to_disk &&
           flush_reason != FlushReason::kErrorRecoveryRetryFlush) {
         ColumnFamilyData* cfd_stats =
@@ -2022,17 +2027,19 @@ Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
         }
       }
     }
-
+    // 如果 switchMemtable 成功，并且有要flush的数据
     if (s.ok() && !flush_reqs.empty()) {
       for (const auto& req : flush_reqs) {
         assert(req.size() == 1);
         ColumnFamilyData* loop_cfd = req[0].first;
+        // 对于每个 cfd 的imm进行 flush
         loop_cfd->imm()->FlushRequested();
       }
       // If the caller wants to wait for this flush to complete, it indicates
       // that the caller expects the ColumnFamilyData not to be free'ed by
       // other threads which may drop the column family concurrently.
       // Therefore, we increase the cfd's ref count.
+      // 如果 caller 认为需要同步等待flush完成。
       if (flush_options.wait) {
         for (const auto& req : flush_reqs) {
           assert(req.size() == 1);
@@ -2040,9 +2047,12 @@ Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
           loop_cfd->Ref();
         }
       }
+      // 将请求加载到等待 flush 中
       for (const auto& req : flush_reqs) {
+        // 加到对应的 queue_ 中
         SchedulePendingFlush(req, flush_reason);
       }
+      // 触发调度
       MaybeScheduleFlushOrCompaction();
     }
 

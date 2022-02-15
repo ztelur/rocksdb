@@ -398,6 +398,7 @@ class VersionEdit {
   using DeletedFiles = std::set<std::pair<int, uint64_t>>;
   const DeletedFiles& GetDeletedFiles() const { return deleted_files_; }
 
+  // 给特定 level 的添加特定的 table file
   // Add the specified table file at the specified level.
   // REQUIRES: This version has not been saved (see VersionSet::SaveTo)
   // REQUIRES: "smallest" and "largest" are smallest and largest keys in file
@@ -414,6 +415,7 @@ class VersionEdit {
                const std::string& min_timestamp,
                const std::string& max_timestamp) {
     assert(smallest_seqno <= largest_seqno);
+    // 在 new_files 中添加对应的 pair，level 和 FileMetaData
     new_files_.emplace_back(
         level,
         FileMetaData(file, file_path_id, file_size, smallest, largest,

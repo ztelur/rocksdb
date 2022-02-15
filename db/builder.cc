@@ -52,6 +52,7 @@ TableBuilder* NewTableBuilder(const TableBuilderOptions& tboptions,
   return tboptions.ioptions.table_factory->NewTableBuilder(tboptions, file);
 }
 
+// memtable flush to level 0 file 时会使用
 Status BuildTable(
     const std::string& dbname, VersionSet* versions,
     const ImmutableDBOptions& db_options, const TableBuilderOptions& tboptions,
@@ -85,20 +86,24 @@ Status BuildTable(
       /*enable_hash=*/paranoid_file_checks);
   Status s;
   meta->fd.file_size = 0;
+  // 这个迭代器是所有memtable迭代器的merge迭代器
   iter->SeekToFirst();
+
   std::unique_ptr<CompactionRangeDelAggregator> range_del_agg(
       new CompactionRangeDelAggregator(&tboptions.internal_comparator,
                                        snapshots));
   uint64_t num_unfragmented_tombstones = 0;
   uint64_t total_tombstone_payload_bytes = 0;
+  // range_del 的迭代器
   for (auto& range_del_iter : range_del_iters) {
     num_unfragmented_tombstones +=
         range_del_iter->num_unfragmented_tombstones();
     total_tombstone_payload_bytes +=
         range_del_iter->total_tombstone_payload_bytes();
+    // 生成一个聚合所有 range_del_iter 的迭代器
     range_del_agg->AddTombstones(std::move(range_del_iter));
   }
-
+  // 生成filename 例子 "/tmp/rocksdb_simple_example/000139.sst" cf_path fd.number 是 139 GetPathId 0
   std::string fname = TableFileName(ioptions.cf_paths, meta->fd.GetNumber(),
                                     meta->fd.GetPathId());
   std::vector<std::string> blob_file_paths;
@@ -111,12 +116,16 @@ Status BuildTable(
 #endif  // !ROCKSDB_LITE
   Env* env = db_options.env;
   assert(env);
+  // 获取对应的文件系统
   FileSystem* fs = db_options.fs.get();
   assert(fs);
 
   TableProperties tp;
   if (iter->Valid() || !range_del_agg->IsEmpty()) {
+    // 当真正有数据要写入到 file 中时
+
     std::unique_ptr<CompactionFilter> compaction_filter;
+    // 如果需要创建 compaction filter
     if (ioptions.compaction_filter_factory != nullptr &&
         ioptions.compaction_filter_factory->ShouldFilterTableFileCreation(
             tboptions.reason)) {
@@ -125,6 +134,10 @@ Status BuildTable(
       context.is_manual_compaction = false;
       context.column_family_id = tboptions.column_family_id;
       context.reason = tboptions.reason;
+
+      // 创建 compaction 的 filter
+      // CompactionFilter提供了一种在rocksdb进行compaction时候，根据自定义逻辑去删除/修改 key/value对的方法。
+      // 这种方式可以让用户实现自定义的垃圾收集方法，比如根据业务的ttl属性删除过期keys，或删除一批范围的key，或者更新已存在key的value
       compaction_filter =
           ioptions.compaction_filter_factory->CreateCompactionFilter(context);
       if (compaction_filter != nullptr &&
@@ -144,6 +157,7 @@ Status BuildTable(
       bool use_direct_writes = file_options.use_direct_writes;
       TEST_SYNC_POINT_CALLBACK("BuildTable:create_file", &use_direct_writes);
 #endif  // !NDEBUG
+      // 使用 file_system 创建一个新的 NewWritableFile，里边就会调用 fs->NewWritableFile
       IOStatus io_s = NewWritableFile(fs, fname, &file, file_options);
       assert(s.ok());
       s = io_s;
@@ -161,15 +175,16 @@ Status BuildTable(
       FileTypeSet tmp_set = ioptions.checksum_handoff_file_types;
       file->SetIOPriority(io_priority);
       file->SetWriteLifeTimeHint(write_hint);
+      // 初始化 file_writer
       file_writer.reset(new WritableFileWriter(
           std::move(file), fname, file_options, ioptions.clock, io_tracer,
           ioptions.stats, ioptions.listeners,
           ioptions.file_checksum_gen_factory.get(),
           tmp_set.Contains(FileType::kTableFile), false));
-
+      // 初始化 builder，可以创建不同类型的table，默认的是 BlockBasedTableBuilder，会调用 table_factory.create_table_builder
       builder = NewTableBuilder(tboptions, file_writer.get());
     }
-
+    // 初始化 MergeHelper
     MergeHelper merge(
         env, tboptions.internal_comparator.user_comparator(),
         ioptions.merge_operator.get(), compaction_filter.get(), ioptions.logger,
@@ -185,7 +200,7 @@ Status BuildTable(
                   io_tracer, blob_callback, blob_creation_reason,
                   &blob_file_paths, blob_file_additions)
             : nullptr);
-
+    // 使用 iter 和 range_del_agg 构建 CompactionIterator
     CompactionIterator c_iter(
         iter, tboptions.internal_comparator.user_comparator(), &merge,
         kMaxSequenceNumber, &snapshots, earliest_write_conflict_snapshot,
@@ -199,9 +214,13 @@ Status BuildTable(
         full_history_ts_low);
 
     c_iter.SeekToFirst();
+    // 一个一个取出键来
     for (; c_iter.Valid(); c_iter.Next()) {
+      // 用户的key
       const Slice& key = c_iter.key();
+      // 用户的数值
       const Slice& value = c_iter.value();
+      // 更详细的key，比如说 user_key，sequence和type(比如说 kTypeDeletion)
       const ParsedInternalKey& ikey = c_iter.ikey();
       // Generate a rolling 64-bit hash of the key and values
       // Note :
@@ -210,7 +229,9 @@ Status BuildTable(
       if (!s.ok()) {
         break;
       }
+      // 将数据写入文件
       builder->Add(key, value);
+      // 更新 file meta data
       meta->UpdateBoundaries(key, value, ikey.sequence, ikey.type);
 
       // TODO(noetzli): Update stats after flush, too.

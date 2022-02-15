@@ -2007,7 +2007,10 @@ class MemTableInserter : public WriteBatch::Handler {
                        nullptr /* kv_prot_info */);
     }
   }
-
+  /**
+   * 个函数主要用来将已经设置flush_state_为flush_requested的memtable的
+   * 状态改变为flush_schedule(意思就是已经进入flush的调度队列),然后将这个columnfamily加入到对应的调度队列
+   */
   void CheckMemtableFull() {
     if (flush_scheduler_ != nullptr) {
       auto* cfd = cf_mems_->current();

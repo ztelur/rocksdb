@@ -314,6 +314,7 @@ class MemTableList {
   // non-empty (regardless of the min_write_buffer_number_to_merge
   // parameter). This flush request will persist until the next time
   // PickMemtablesToFlush() is called.
+  // 将自己标记为需要flush。会导致 IsFlushPending 返回true，并且会在 PickMemtablesToFlush时进行处理
   void FlushRequested() {
     flush_requested_ = true;
     // If there are some memtables stored in imm() that dont trigger

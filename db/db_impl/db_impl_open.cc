@@ -1580,7 +1580,7 @@ Status DB::Open(const DBOptions& db_options, const std::string& dbname,
   return DBImpl::Open(db_options, dbname, column_families, handles, dbptr,
                       !kSeqPerBatch, kBatchPerTxn);
 }
-
+// 创建
 IOStatus DBImpl::CreateWAL(uint64_t log_file_num, uint64_t recycle_log_number,
                            size_t preallocate_block_size,
                            log::Writer** new_log) {
@@ -1601,9 +1601,11 @@ IOStatus DBImpl::CreateWAL(uint64_t log_file_num, uint64_t recycle_log_number,
     std::string old_log_fname = LogFileName(wal_dir, recycle_log_number);
     TEST_SYNC_POINT("DBImpl::CreateWAL:BeforeReuseWritableFile1");
     TEST_SYNC_POINT("DBImpl::CreateWAL:BeforeReuseWritableFile2");
+    // 复用文件
     io_s = fs_->ReuseWritableFile(log_fname, old_log_fname, opt_file_options,
                                   &lfile, /*dbg=*/nullptr);
   } else {
+    // 创建新的文件
     io_s = NewWritableFile(fs_.get(), log_fname, &lfile, opt_file_options);
   }
 
@@ -1613,6 +1615,7 @@ IOStatus DBImpl::CreateWAL(uint64_t log_file_num, uint64_t recycle_log_number,
 
     const auto& listeners = immutable_db_options_.listeners;
     FileTypeSet tmp_set = immutable_db_options_.checksum_handoff_file_types;
+    // 构建对应的 log::Writer
     std::unique_ptr<WritableFileWriter> file_writer(new WritableFileWriter(
         std::move(lfile), log_fname, opt_file_options,
         immutable_db_options_.clock, io_tracer_, nullptr /* stats */, listeners,

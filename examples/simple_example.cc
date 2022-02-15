@@ -57,6 +57,10 @@ int main() {
     s = db->Write(WriteOptions(), &batch);
   }
 
+  {
+    db->Flush(FlushOptions());
+  }
+
   s = db->Get(ReadOptions(), "key1", &value);
   assert(s.IsNotFound());
 

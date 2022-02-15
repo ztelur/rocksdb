@@ -2088,6 +2088,7 @@ class DBImpl : public DB {
   // keys in the two consecuitive states do not overlap.
   // It is protected by log_write_mutex_ when two_write_queues_ is enabled.
   // Otherwise only the heaad of write_thread_ can access it.
+  // 写入到 WAL 的只会在 recovery 时使用的信息。
   WriteBatch cached_recoverable_state_;
   std::atomic<bool> cached_recoverable_state_empty_ = {true};
   std::atomic<uint64_t> total_log_size_;

@@ -166,16 +166,18 @@ void FlushJob::RecordFlushIOStats() {
       ThreadStatus::FLUSH_BYTES_WRITTEN, IOSTATS(bytes_written));
   IOSTATS_RESET(bytes_written);
 }
+// 在 flush 时，选择需要flush的 memtable。
 void FlushJob::PickMemTable() {
   db_mutex_->AssertHeld();
   assert(!pick_memtable_called);
   pick_memtable_called = true;
   // Save the contents of the earliest memtable as a new Table
+  // 将需要 flush 的 imm 添加到 mems_ 中
   cfd_->imm()->PickMemtablesToFlush(max_memtable_id_, &mems_);
   if (mems_.empty()) {
     return;
   }
-
+  // 估算 flush 数据大小
   ReportFlushInputSize(mems_);
 
   // entries mems are (implicitly) sorted in ascending order by their created
@@ -190,6 +192,7 @@ void FlushJob::PickMemTable() {
   edit_->SetColumnFamily(cfd_->GetID());
 
   // path 0 for level 0 file.
+  // 表示写入新的 level 0 的文件
   meta_.fd = FileDescriptor(versions_->NewFileNumber(), 0, 0);
 
   base_ = cfd_->current();
@@ -257,6 +260,7 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
     }
   }
   Status s;
+  // 如果进行了 mem purge 则进行相应操作，否则则进行 WriteLevel0Table 函数。
   if (mempurge_s.ok()) {
     base_->Unref();
     s = Status::OK();
@@ -784,6 +788,7 @@ bool FlushJob::MemPurgeDecider() {
           threshold);
 }
 
+// 将 imm 数据写入到 sstable 的过程，也就是 level 0 table 写入过程。
 Status FlushJob::WriteLevel0Table() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_FLUSH_WRITE_L0);
@@ -812,11 +817,13 @@ Status FlushJob::WriteLevel0Table() {
     uint64_t total_num_entries = 0, total_num_deletes = 0;
     uint64_t total_data_size = 0;
     size_t total_memory_usage = 0;
+    // 首先，遍历所有的 imm memtable，统计一些相关的统计信息。
     for (MemTable* m : mems_) {
       ROCKS_LOG_INFO(
           db_options_.info_log,
           "[%s] [JOB %d] Flushing memtable with next log file: %" PRIu64 "\n",
           cfd_->GetName().c_str(), job_context_->job_id, m->GetNextLogNumber());
+      // 并且为每个 memtable 构建对应的 iterator
       memtables.push_back(m->NewIterator(ro, &arena));
       auto* range_del_iter =
           m->NewRangeTombstoneIterator(ro, kMaxSequenceNumber);
@@ -965,7 +972,7 @@ Status FlushJob::WriteLevel0Table() {
                    meta_.file_creation_time, meta_.file_checksum,
                    meta_.file_checksum_func_name, meta_.min_timestamp,
                    meta_.max_timestamp);
-
+    // 将可能的 blob file 相关的数据也添加上去。
     edit_->SetBlobFileAdditions(std::move(blob_file_additions));
   }
 #ifndef ROCKSDB_LITE

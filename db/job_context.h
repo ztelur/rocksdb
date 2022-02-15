@@ -44,7 +44,7 @@ struct SuperVersionContext {
 #endif
         new_superversion(std::move(other.new_superversion)) {
   }
-
+  // 初始化一个新的 SuperVersion 结构体
   void NewSuperVersion() {
     new_superversion = std::unique_ptr<SuperVersion>(new SuperVersion());
   }

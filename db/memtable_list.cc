@@ -338,6 +338,7 @@ bool MemTableList::IsFlushPending() const {
 }
 
 // Returns the memtables that need to be flushed.
+// 将需要 flush 的 memtable 返回，加载到 ret 中
 void MemTableList::PickMemtablesToFlush(uint64_t max_memtable_id,
                                         autovector<MemTable*>* ret) {
   AutoThreadOperationStageUpdater stage_updater(
@@ -352,6 +353,7 @@ void MemTableList::PickMemtablesToFlush(uint64_t max_memtable_id,
   // However, when the mempurge feature is activated, new memtables with older
   // IDs will be added to the memlist. Therefore we std::sort(ret) at the end to
   // return a vector of memtables sorted by increasing memtable ID.
+  // 遍历对应的 mem list
   for (auto it = memlist.rbegin(); it != memlist.rend(); ++it) {
     MemTable* m = *it;
     if (!atomic_flush && m->atomic_flush_seqno_ != kMaxSequenceNumber) {
@@ -360,6 +362,7 @@ void MemTableList::PickMemtablesToFlush(uint64_t max_memtable_id,
     if (m->GetID() > max_memtable_id) {
       break;
     }
+    // 如果不是已经在 flush 过程中，则进行处理
     if (!m->flush_in_progress_) {
       assert(!m->flush_completed_);
       num_flush_not_started_--;
@@ -378,6 +381,7 @@ void MemTableList::PickMemtablesToFlush(uint64_t max_memtable_id,
   // This is useful when the mempurge feature is activated
   // and the memtables are not guaranteed to be sorted in
   // the memlist vector.
+  // 进行排序
   std::sort(ret->begin(), ret->end(),
             [](const MemTable* m1, const MemTable* m2) -> bool {
               return m1->GetID() < m2->GetID();
@@ -424,7 +428,7 @@ Status MemTableList::TryInstallMemtableFlushResults(
   for (size_t i = 0; i < mems.size(); ++i) {
     // All the edits are associated with the first memtable of this batch.
     assert(i == 0 || mems[i]->GetEdits()->NumEntries() == 0);
-
+    // 将mem的状态设置为已经完成 flush
     mems[i]->flush_completed_ = true;
     mems[i]->file_number_ = file_number;
   }

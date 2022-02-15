@@ -1035,6 +1035,7 @@ Status DBImpl::PreprocessWrite(const WriteOptions& write_options,
 
   assert(!single_column_family_mode_ ||
          versions_->GetColumnFamilySet()->NumberOfColumnFamilies() == 1);
+  // WAL 大小够了。
   if (UNLIKELY(status.ok() && !single_column_family_mode_ &&
                total_log_size_ > GetMaxTotalWalSize())) {
     WaitForPendingWrites();
@@ -1056,7 +1057,9 @@ Status DBImpl::PreprocessWrite(const WriteOptions& write_options,
   if (UNLIKELY(status.ok() && !trim_history_scheduler_.Empty())) {
     status = TrimMemtableHistory(write_context);
   }
-
+  /**
+   * flushscheduler如何来调度flush线程.首先在每次写WAL之前都会调用PreprocessWrite,然后这个函数会判断flush_scheduler是否为空(也就是是否有已经满掉的memtable需要刷新到磁盘).
+   */
   if (UNLIKELY(status.ok() && !flush_scheduler_.Empty())) {
     WaitForPendingWrites();
     status = ScheduleFlushes(write_context);
@@ -1418,7 +1421,7 @@ void DBImpl::AssignAtomicFlushSeq(const autovector<ColumnFamilyData*>& cfds) {
     cfd->imm()->AssignAtomicFlushSeq(seq);
   }
 }
-// 切换 WAL
+// 切换 WAL，并且进行 flush 等操作。
 Status DBImpl::SwitchWAL(WriteContext* write_context) {
   mutex_.AssertHeld();
   assert(write_context != nullptr);
@@ -1810,7 +1813,7 @@ Status DBImpl::TrimMemtableHistory(WriteContext* context) {
   }
   return Status::OK();
 }
-
+// 遍历之前所有的需要被flush的memtable，然后调用switchMemtable来进行后续操作.这里要注意在SwitchMemtable也会触发调用flush线程.
 Status DBImpl::ScheduleFlushes(WriteContext* context) {
   autovector<ColumnFamilyData*> cfds;
   if (immutable_db_options_.atomic_flush) {
@@ -1894,6 +1897,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
 
   // Recoverable state is persisted in WAL. After memtable switch, WAL might
   // be deleted, so we write the state to memtable to be persisted as well.
+  // 写入恢复状态的信息。写入到 memtables中
   Status s = WriteRecoverableState();
   if (!s.ok()) {
     return s;
@@ -1911,10 +1915,12 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
     log_write_mutex_.Unlock();
   }
   uint64_t recycle_log_number = 0;
+  // 如果需要创建新的 wal 文件，并且需要复用 log file
   if (creating_new_log && immutable_db_options_.recycle_log_file_num &&
       !log_recycle_files_.empty()) {
     recycle_log_number = log_recycle_files_.front();
   }
+  // 如果需要创建新的wal，则调用 version 拿最新的版本
   uint64_t new_log_number =
       creating_new_log ? versions_->NewFileNumber() : logfile_number_;
   const MutableCFOptions mutable_cf_options = *cfd->GetLatestMutableCFOptions();
@@ -1931,6 +1937,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
   // Log this later after lock release. It may be outdated, e.g., if background
   // flush happens before logging, but that should be ok.
   int num_imm_unflushed = cfd->imm()->NumNotFlushed();
+  // 预先分配的数据量
   const auto preallocate_block_size =
       GetWalPreallocateBlockSize(mutable_cf_options.write_buffer_size);
   mutex_.Unlock();
@@ -1948,7 +1955,9 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
   }
   if (s.ok()) {
     SequenceNumber seq = versions_->LastSequence();
+    // 生成一个新的 mem
     new_mem = cfd->ConstructNewMemtable(mutable_cf_options, seq);
+    // 创建一个superversion，放在 new_superversion 中
     context->superversion_context.NewSuperVersion();
   }
   ROCKS_LOG_INFO(immutable_db_options_.info_log,
@@ -1967,9 +1976,11 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
   if (s.ok() && creating_new_log) {
     log_write_mutex_.Lock();
     assert(new_log != nullptr);
+    // 如果当前还有数据，则全部 flush 到旧的 wal文件中，然后切换到新文件。
     if (!logs_.empty()) {
       // Alway flush the buffer of the last log before switching to a new one
       log::Writer* cur_log_writer = logs_.back().writer;
+      // 进行写入，函数背后实现其实是调用了 dest_->Flush();
       io_s = cur_log_writer->WriteBuffer();
       if (s.ok()) {
         s = io_s;
@@ -1983,6 +1994,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
       }
     }
     if (s.ok()) {
+      // 将 wal 的文件指向新的文件
       logfile_number_ = new_log_number;
       log_empty_ = true;
       log_dir_synced_ = false;
@@ -2009,16 +2021,20 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
     s = error_handler_.GetBGError();
     return s;
   }
-
+  // wal指向新的wal后，需要处理 memtable 和 imm 还有 superversion的问题
   bool empty_cf_updated = false;
+
+  // 非 2pc 模式下，当 wal 不存储任何非flush的数据就可以删除了。
   if (immutable_db_options_.track_and_verify_wals_in_manifest &&
       !immutable_db_options_.allow_2pc && creating_new_log) {
     // In non-2pc mode, WALs become obsolete if they do not contain unflushed
     // data. Updating the empty CF's log number might cause some WALs to become
     // obsolete. So we should track the WAL obsoletion event before actually
     // updating the empty CF's log number.
+    // 可以拿到所有 cf 的包含未flush数据的最小的 wal file number
     uint64_t min_wal_number_to_keep =
         versions_->PreComputeMinLogNumberWithUnflushedData(logfile_number_);
+    // 如果这个num已经大于目前已知道的wal的话。
     if (min_wal_number_to_keep >
         versions_->GetWalSet().GetMinWalNumberToKeep()) {
       // Get a snapshot of the empty column families.
@@ -2038,7 +2054,9 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
 
       VersionEdit wal_deletion;
       wal_deletion.DeleteWalsBefore(min_wal_number_to_keep);
+      // 使用 VersionEdit 删除这之前的 wal 文件
       s = versions_->LogAndApplyToDefaultColumnFamily(&wal_deletion, &mutex_);
+
       if (!s.ok() && versions_->io_status().IsIOError()) {
         s = error_handler_.SetBGError(versions_->io_status(),
                                       BackgroundErrorReason::kManifestWrite);
@@ -2058,6 +2076,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
       empty_cf_updated = true;
     }
   }
+  // 设置新的文件number
   if (!empty_cf_updated) {
     for (auto cf : *versions_->GetColumnFamilySet()) {
       // all this is just optimization to delete logs that
@@ -2072,12 +2091,15 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
       }
     }
   }
-
+  // 给当前mem 设置下一个 log number。
   cfd->mem()->SetNextLogNumber(logfile_number_);
   assert(new_mem != nullptr);
+  // 把当前mem 加入到 imm 中
   cfd->imm()->Add(cfd->mem(), &context->memtables_to_free_);
   new_mem->Ref();
+  // 将当前mem 设置成 mem
   cfd->SetMemtable(new_mem);
+  // 新创建一个 superversion
   InstallSuperVersionAndScheduleWork(cfd, &context->superversion_context,
                                      mutable_cf_options);
 

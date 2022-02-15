@@ -1111,6 +1111,7 @@ class VersionSet {
   }
 
   // Allocate and return a new file number
+  // 一个数字，cas进行加1
   uint64_t NewFileNumber() { return next_file_number_.fetch_add(1); }
 
   // Fetch And Add n new file number
@@ -1182,14 +1183,18 @@ class VersionSet {
   // file.
   // Empty column families' log number is considered to be
   // new_log_number_for_empty_cf.
+  // 计算还包含未flush的数据的最小的wal文件号
   uint64_t PreComputeMinLogNumberWithUnflushedData(
       uint64_t new_log_number_for_empty_cf) const {
     uint64_t min_log_num = port::kMaxUint64;
+    // 遍历所有的 cf
     for (auto cfd : *column_family_set_) {
       // It's safe to ignore dropped column families here:
       // cfd->IsDropped() becomes true after the drop is persisted in MANIFEST.
+      // 如果cfd-为空，直接取 new_log_number_for_empty_cf，否则则取其 log number
       uint64_t num =
           cfd->IsEmpty() ? new_log_number_for_empty_cf : cfd->GetLogNumber();
+      // 比较并设置
       if (min_log_num > num && !cfd->IsDropped()) {
         min_log_num = num;
       }
